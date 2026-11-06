@@ -148,6 +148,13 @@ export const SYSTEM_PROMPT =
 
 function buildSystemPrompt(persona?: ProviderConfig["persona"]): string {
   const parts: string[] = [SYSTEM_PROMPT, buildAvatarDirectives()];
+  // Plugin-contributed instruction fragments (ctx.systemPrompt.register).
+  // Read from the host bridge so this bundle never imports host modules.
+  const pluginPrompts =
+    (globalThis as any).__companion_host__?.systemPrompts?.get?.() ?? [];
+  if (Array.isArray(pluginPrompts) && pluginPrompts.length) {
+    parts.push(pluginPrompts.filter(Boolean).join("\n\n"));
+  }
   if (!persona) return parts.join("\n\n");
   if (persona.companionName.trim())
     parts.push(`Your name is ${persona.companionName.trim()}.`);
