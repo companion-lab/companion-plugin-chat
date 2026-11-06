@@ -1,0 +1,9 @@
+{
+  "id": "chat",
+  "name": "Chat",
+  "version": "0.1.0",
+  "description": "The avatar's AI conversation: provider chat with tool loop, streaming TTS/STT speech, wake word, clarifying questions, and the Persona/Connection settings sections.",
+  "abi": 2,
+  "permissions": ["storage", "events", "tools", "secrets"],
+  "frontend": { "entry": "frontend.js" }
+}
