@@ -13,7 +13,7 @@
 // - UI kit components come from ctx.ui (the host's shared kit).
 
 import { useSyncExternalStore, type ChangeEvent } from "react";
-import type { PluginContext } from "../../sdk/js/@companion/plugin";
+import type { PluginContext } from "@companion-lab/plugin";
 import type { ProviderKind } from "./net/providers";
 import {
   getApiSettings,

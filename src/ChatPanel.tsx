@@ -26,7 +26,7 @@
 // - ConfirmModal comes from the host UI kit (ctx.ui).
 
 import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from "react";
-import type { PluginContext, TtsStream } from "../../sdk/js/@companion/plugin";
+import type { PluginContext, TtsStream } from "@companion-lab/plugin";
 import type { ChatMessage } from "./net/protocol";
 import { RouterClient } from "./net/ws";
 import { setAvatarCapabilities } from "./net/capabilities";
