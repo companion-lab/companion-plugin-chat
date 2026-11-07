@@ -3,9 +3,12 @@
 // sections, chat-history, context).
 //
 // Registrations:
-// - "connection.api" section (AI backend/provider/key, renders on the
-//   voice-owned Connection tab) and "general.persona" section — same stable
-//   ids the core used, so overrides and user habits carry over unchanged.
+// - "general.chatbox" section (chat box show/hide, moved from the host's
+//   InterfaceSection; the voice-interrupt toggle lives in the stt plugin's
+//   Voice Input section) and "general.persona" section on the General tab,
+//   "connection.api" section (AI backend/provider/key, renders on the
+//   voice-owned Connection tab) — same stable ids the core used, so
+//   overrides and user habits carry over unchanged.
 // - The main-window chat panel via ctx.main.overrideWidget("chatPanel", …):
 //   the host App renders that target with extra props (onEmotion/onMotion,
 //   ttsSpeaking, …) both now and after the slimming step — the panel ignores
@@ -20,6 +23,7 @@ import { initChatSettings } from "./settings";
 import { initChatHistory } from "./chat-history";
 import { setAvatarCapabilities } from "./net/capabilities";
 import { ApiSettingsSection } from "./ApiSettingsSection";
+import { ChatBoxSettingsSection } from "./ChatBoxSettingsSection";
 import { PersonaSettingsSection } from "./PersonaSettingsSection";
 import { ChatPanel } from "./ChatPanel";
 
@@ -46,6 +50,15 @@ export default definePlugin((ctx: PluginContext) => {
   // Settings: sections only. The Connection TAB is owned by the voice
   // plugin; our api section renders on it alongside the speech section
   // (sections are keyed by tabId regardless of tab owner).
+  ctx.settings.registerSection({
+    id: "general.chatbox",
+    tabId: "general",
+    slot: "top",
+    order: 100,
+    component: function ChatBoxSectionViaCtx() {
+      return <ChatBoxSettingsSection ctx={ctx} />;
+    },
+  });
   ctx.settings.registerSection({
     id: "general.persona",
     tabId: "general",

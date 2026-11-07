@@ -16,8 +16,10 @@
 //   the STT plugin's localStorage "companion:stt" (the stt plugin owns that
 //   store since the voice split); live updates arrive through the
 //   cross-window DOM storage event.
-// - Barge-in toggle is read from the host ui-prefs localStorage
-//   "companion:ui" and updated via the host-global "ui-prefs-changed" event.
+// - Barge-in toggle is read from the ui-prefs localStorage
+//   "companion:ui" (owned by the stt plugin's Voice Input section since it
+//   moved out of the host Interface section) and updated via the
+//   host-global "ui-prefs-changed" event.
 // - Global "mic-toggle" (host shortcut), "mic-active-changed" (voice plugin
 //   reaction), and the alarms/calendar "plugin:*:alarm-fired" announcements
 //   use the vendored tauri bridge (plugin ctx.events is namespaced).
@@ -91,6 +93,10 @@ function readBargeIn(): boolean {
   }
   return true;
 }
+
+// Set while this panel is mounted so the stt plugin's MicShortcutOverlay
+// hands the host mic shortcut off to us (must match MicShortcutOverlay.tsx).
+const CHAT_PANEL_PRESENT_FLAG = "companion:chat-panel-present";
 
 function refreshAvatarCapabilities(ctx: PluginContext): void {
   try {
@@ -259,7 +265,8 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
     [],
   );
 
-  // Barge-in toggle: host ui-prefs (localStorage "companion:ui").
+  // Barge-in toggle: ui-prefs (localStorage "companion:ui"), owned by the
+  // stt plugin's Voice Input section.
   const [bargeInEnabled, setBargeInEnabled] = useState(readBargeIn);
   const bargeInRef = useRef(bargeInEnabled);
   bargeInRef.current = bargeInEnabled;
@@ -687,7 +694,9 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
   const toggleMicRef = useRef(toggleMic);
   toggleMicRef.current = toggleMic;
   // Host-global mic shortcut: App.tsx emits "mic-toggle"; the host events.ts
-  // used to fan it out to the panel.
+  // used to fan it out to the panel. With this panel unmounted (chat plugin
+  // disabled) the stt plugin's MicShortcutOverlay owns the shortcut instead —
+  // the presence flag below is how it hands off to us.
   useEffect(() => {
     let off: (() => void) | null = null;
     tauriListen("mic-toggle", () => {
@@ -699,6 +708,25 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
       .catch(() => {});
     return () => {
       off?.();
+    };
+  }, []);
+
+  // Announce panel presence for the mic shortcut handoff: the stt plugin's
+  // MicShortcutOverlay reads this flag synchronously on every shortcut press
+  // and stays hands-off while it is set — including while this panel is
+  // hidden via the Chat box toggle (voice and mic keep working).
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAT_PANEL_PRESENT_FLAG, "1");
+    } catch {
+      /* ignore */
+    }
+    return () => {
+      try {
+        localStorage.removeItem(CHAT_PANEL_PRESENT_FLAG);
+      } catch {
+        /* ignore */
+      }
     };
   }, []);
 
@@ -717,7 +745,7 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
   }, []);
 
   // Barge-in toggle live updates via the host-global "ui-prefs-changed"
-  // event (the host Interface section emits it on save).
+  // event (the stt plugin's Voice Input section emits it on save).
   useEffect(() => {
     let off: (() => void) | null = null;
     tauriListen<{ bargeIn?: boolean }>("ui-prefs-changed", (p) => {
