@@ -1,7 +1,9 @@
-// Port of the host's app/src/chat-history.ts. The stored copy moves from
-// localStorage "companion:chat-history" to ctx.storage key "chatHistory"
-// (one-time migration in initChatHistory; the localStorage key is left in
-// place as legacy, never deleted).
+// Port of the host's app/src/chat-history.ts. The stored copy lives in
+// ctx.storage key "chatHistory" (one-time migration from the host's
+// localStorage "companion:chat-history" in initChatHistory); every save
+// mirrors back into that localStorage key — the same transition pattern as
+// the api/persona settings stores — so the history stays visible there and
+// a failed storage write still leaves a recent copy. Clearing removes both.
 //
 // The host read the history synchronously at ChatPanel mount; plugin storage
 // is async, so the panel reads a module snapshot (useSyncExternalStore) that
@@ -16,7 +18,8 @@ export const MAX_STORED_MSGS = 100;
 
 // Plugin storage key (manifest permission: storage).
 const STORAGE_KEY = "chatHistory";
-// Legacy host key — read once during migration, then left untouched.
+// Legacy host key — read once during migration, then kept in sync on every
+// save (mirror) and removed on clear.
 const LEGACY_STORE_KEY = "companion:chat-history";
 
 let ctxRef: PluginContext | null = null;
@@ -56,8 +59,8 @@ export function initChatHistory(ctx: PluginContext): void {
     try {
       let stored = await ctx.storage.get<unknown>(STORAGE_KEY);
       if (stored == null) {
-        // One-time migration from the host's localStorage key. Not deleted —
-        // the host may still be reading it during the transition.
+        // One-time migration from the host's localStorage key. From here on
+        // the mirror (see mirrorLegacy) keeps that key fresh instead.
         try {
           const raw = localStorage.getItem(LEGACY_STORE_KEY);
           if (raw) stored = JSON.parse(raw);
@@ -102,9 +105,21 @@ export function setHistorySnapshot(msgs: Msg[]): void {
   notify();
 }
 
+/** Keep the host's legacy localStorage copy in sync with the plugin storage
+ *  (transition parity: inspectable in devtools, and a recovery copy when a
+ *  storage write fails). */
+function mirrorLegacy(msgs: Msg[]): void {
+  try {
+    localStorage.setItem(LEGACY_STORE_KEY, JSON.stringify(msgs));
+  } catch {
+    /* ignore */
+  }
+}
+
 export function saveChatHistory(msgs: Msg[]): void {
   setHistorySnapshot(msgs);
   void ctxRef?.storage.set(STORAGE_KEY, snapshot).catch(() => {});
+  mirrorLegacy(snapshot);
 }
 
 export function clearChatHistory(): void {
@@ -112,4 +127,11 @@ export function clearChatHistory(): void {
   hydrated = true;
   notify();
   void ctxRef?.storage.remove(STORAGE_KEY).catch(() => {});
+  // Remove the mirror too — otherwise the one-time migration would resurrect
+  // the cleared history from localStorage on the next start.
+  try {
+    localStorage.removeItem(LEGACY_STORE_KEY);
+  } catch {
+    /* ignore */
+  }
 }
