@@ -15,7 +15,7 @@
 // All chat logic is frontend-only (providers are HTTP via the vendored
 // fetch); there is no Rust backend.
 
-import { definePlugin, type PluginContext } from "@companion-lab/plugin";
+import { definePlugin, type PluginContext } from "../../../sdk/js/@companion/plugin";
 import { initChatSettings } from "./settings";
 import { initChatHistory } from "./chat-history";
 import { setAvatarCapabilities } from "./net/capabilities";

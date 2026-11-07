@@ -8,7 +8,7 @@
 // hydrates once the storage read lands. Writes update the snapshot
 // immediately and persist debounced (the panel already debounces 500ms).
 
-import type { PluginContext } from "@companion-lab/plugin";
+import type { PluginContext } from "../../../sdk/js/@companion/plugin";
 
 export type Msg = { role: "user" | "assistant"; text: string };
 

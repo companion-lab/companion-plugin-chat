@@ -21,7 +21,7 @@
 //   main window never re-reads the keychain at runtime). The chat panel and
 //   both settings sections subscribe via useSyncExternalStore.
 
-import type { PluginContext } from "@companion-lab/plugin";
+import type { PluginContext } from "../../../sdk/js/@companion/plugin";
 import type { ProviderKind } from "./net/providers";
 import { tauriInvoke, tauriListen } from "./tauri";
 
