@@ -40,3 +40,24 @@ companion-cli build /path/to/companion-plugin-chat --backend
 
 Install dependencies first if you use a package manager lockfile
 (`pnpm install` / `npm install`).
+
+## Downloading releases
+
+CI builds installable zips on every push to `main` (the "Build plugin"
+workflow). To publish a release, push a tag matching the version in
+`manifest.json`:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The release gets one zip per platform — download the one for your machine
+and import it in the Companion app via **Settings → Plugins → Import
+plugin…**:
+
+| File | Platform |
+|---|---|
+| `chat-0.1.0.zip` | All platforms (frontend-only) |
+
+Non-tag runs of the workflow publish the same zips as run artifacts for
+testing. CI never touches the zips committed under `dist/`.
