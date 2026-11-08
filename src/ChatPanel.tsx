@@ -693,10 +693,10 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
 
   const toggleMicRef = useRef(toggleMic);
   toggleMicRef.current = toggleMic;
-  // Host-global mic shortcut: App.tsx emits "mic-toggle"; the host events.ts
-  // used to fan it out to the panel. With this panel unmounted (chat plugin
-  // disabled) the stt plugin's MicShortcutOverlay owns the shortcut instead —
-  // the presence flag below is how it hands off to us.
+  // Host-global mic shortcut: the stt plugin's MicShortcutController owns the
+  // OS registration and emits "mic-toggle" per press. With this panel
+  // unmounted (chat plugin disabled) the controller runs a standalone capture
+  // session instead — the presence flag below is how it hands off to us.
   useEffect(() => {
     let off: (() => void) | null = null;
     tauriListen("mic-toggle", () => {
