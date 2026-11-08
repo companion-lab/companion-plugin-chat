@@ -15,7 +15,7 @@
 // every event.
 
 import { useEffect, useState } from "react";
-import type { PluginContext } from "../../../sdk/js/@companion/plugin";
+import type { PluginContext } from "@companion-lab/plugin";
 import { tauriEmit, tauriListen } from "./tauri";
 import { injectStyles } from "./styles";
 
