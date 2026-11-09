@@ -31,6 +31,7 @@ import {
   finalAvatarResult,
 } from "../avatar";
 import { doFetch, canStream, throwIfHttpError } from "../fetch";
+import { anthropicToolResultBlocks } from "../media-parts";
 import { readSse, extractPartialText } from "../sse";
 
 export class AnthropicProvider implements Provider {
@@ -40,6 +41,7 @@ export class AnthropicProvider implements Provider {
   async chat({
     messages,
     signal,
+    memoryContext,
     onToken,
     onThinking,
   }: ProviderRequest): Promise<ProviderResult> {
@@ -67,7 +69,7 @@ export class AnthropicProvider implements Provider {
       },
       ...toAnthropicTools(mcpTools),
     ];
-    const built0 = buildMessages(messages, this.cfg.persona);
+    const built0 = buildMessages(messages, this.cfg.persona, memoryContext);
     const sysBase = msgText(built0[0]);
     const convo: any[] = built0
       .filter((m) => m.role !== "system")
@@ -206,7 +208,7 @@ export class AnthropicProvider implements Provider {
             });
             convo.push({
               role: "user",
-              content: toolResultMessage(fb.qualified, output, goal),
+              content: anthropicToolResultBlocks(fb.qualified, output, goal),
             });
             continue;
           }
@@ -306,7 +308,7 @@ export class AnthropicProvider implements Provider {
         results.push({
           type: "tool_result",
           tool_use_id: c.id,
-          content: toolResultMessage(c.qualified, output, goal),
+          content: anthropicToolResultBlocks(c.qualified, output, goal),
         });
       }
       convo.push({ role: "user", content: results });

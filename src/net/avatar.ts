@@ -146,7 +146,10 @@ export const SYSTEM_PROMPT =
   "Place double or triple tags at the start or end of sentences for emphasis. " +
   "Example: <laugh><laugh> Hello! How can I help you today? <breath><breath>";
 
-function buildSystemPrompt(persona?: ProviderConfig["persona"]): string {
+function buildSystemPrompt(
+  persona?: ProviderConfig["persona"],
+  memoryContext?: string,
+): string {
   const parts: string[] = [SYSTEM_PROMPT, buildAvatarDirectives()];
   // Plugin-contributed instruction fragments (ctx.systemPrompt.register).
   // Read from the host bridge so this bundle never imports host modules.
@@ -154,6 +157,12 @@ function buildSystemPrompt(persona?: ProviderConfig["persona"]): string {
     (globalThis as any).__companion_host__?.systemPrompts?.get?.() ?? [];
   if (Array.isArray(pluginPrompts) && pluginPrompts.length) {
     parts.push(pluginPrompts.filter(Boolean).join("\n\n"));
+  }
+  // Memory plugin recall block for this turn (see ./memory.ts). It rides in
+  // the single system message because Anthropic/Gemini drop non-leading
+  // system messages from the wire.
+  if (memoryContext && memoryContext.trim()) {
+    parts.push(memoryContext.trim());
   }
   if (!persona) return parts.join("\n\n");
   if (persona.companionName.trim())
@@ -169,8 +178,9 @@ function buildSystemPrompt(persona?: ProviderConfig["persona"]): string {
 export function buildMessages(
   messages: ChatMessage[],
   persona?: ProviderConfig["persona"],
+  memoryContext?: string,
 ): ChatMessage[] {
-  const sys = buildSystemPrompt(persona);
+  const sys = buildSystemPrompt(persona, memoryContext);
   const hasSystem = messages[0]?.role === "system";
   if (hasSystem) {
     return [{ role: "system", content: sys }, ...messages.slice(1)];

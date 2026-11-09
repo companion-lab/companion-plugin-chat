@@ -11,6 +11,7 @@
 // immediately and persist debounced (the panel already debounces 500ms).
 
 import type { PluginContext } from "@companion-lab/plugin";
+import { tauriListen } from "./tauri";
 
 export type Msg = { role: "user" | "assistant"; text: string };
 
@@ -55,6 +56,7 @@ function sanitize(parsed: unknown): Msg[] {
 export function initChatHistory(ctx: PluginContext): void {
   if (ctxRef) return;
   ctxRef = ctx;
+  startMemoryBackfill(ctx);
   void (async () => {
     try {
       let stored = await ctx.storage.get<unknown>(STORAGE_KEY);
@@ -75,6 +77,8 @@ export function initChatHistory(ctx: PluginContext): void {
       if (!hydrated) {
         snapshot = sanitize(stored);
         hydrated = true;
+        // Available for the memory plugin's backfill request (consumed once).
+        pendingBackfill = snapshot.slice();
         notify();
       }
     } catch (e) {
@@ -134,4 +138,41 @@ export function clearChatHistory(): void {
   } catch {
     /* ignore */
   }
+}
+
+// ─── Memory-plugin backfill ───
+// The memory plugin (vector store of past messages) asks for the existing
+// history once per session, via the raw "plugin:memory:backfill-request"
+// event — cross-plugin, the same channel pattern as the alarm-fired events.
+// We re-emit each stored message through the same ctx.events.emit("message")
+// path the live capture uses; the memory backend dedupes exact role+text
+// repeats, so serving a request can never double-store. pendingBackfill is
+// per-session: set at hydration, consumed by the FIRST request — later
+// requests get nothing (dedupe would catch re-emits, but re-embedding
+// hundreds of messages would burn embedding API calls for nothing).
+
+let pendingBackfill: Msg[] | null = null;
+let backfillListenerStarted = false;
+
+function startMemoryBackfill(ctx: PluginContext): void {
+  if (backfillListenerStarted) return;
+  backfillListenerStarted = true;
+  void tauriListen("plugin:memory:backfill-request", () => {
+    const pending = pendingBackfill;
+    pendingBackfill = null;
+    if (!pending?.length) return;
+    // Synthetic timestamps spaced a minute apart, oldest first, so the
+    // memory browser shows a plausible order.
+    const now = Date.now();
+    pending.forEach((m, i) => {
+      ctx.events.emit("message", {
+        role: m.role,
+        text: m.text,
+        ts: now - (pending.length - 1 - i) * 60_000,
+      });
+    });
+    ctx.log.info(`memory backfill: served ${pending.length} messages`);
+  }).catch(() => {
+    /* non-Tauri run — nothing to backfill */
+  });
 }

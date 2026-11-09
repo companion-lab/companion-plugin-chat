@@ -51,6 +51,7 @@ import {
   type Msg,
 } from "./chat-history";
 import { buildWire } from "./context";
+import { fetchMemoryContext } from "./net/memory";
 import {
   getApiSettings,
   getPersonaSettings,
@@ -355,10 +356,15 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
         { role: "assistant", text: `❓ ${ask.question}` },
         { role: "user", text },
       ]);
+      // Memory capture: onDone only sees the final reply, so the clarifying
+      // question and the user's answer are captured here instead.
+      const now = Date.now();
+      ctx.events.emit("message", { role: "assistant", text: `❓ ${ask.question}`, ts: now });
+      ctx.events.emit("message", { role: "user", text, ts: now });
     }
     ask.resolve(text);
     return true;
-  }, [commitHistory]);
+  }, [ctx, commitHistory]);
 
   const answerAskRef = useRef(answerAsk);
   answerAskRef.current = answerAsk;
@@ -429,7 +435,9 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
 
   // Shared provider turn: streams `wire` into TTS/chat and appends the final
   // assistant message to the live history when the turn completes.
-  const runTurn = useCallback(async (wire: ChatMessage[]) => {
+  // `memoryContext` is the memory plugin's recall block for this turn (see
+  // ./net/memory.ts); ""/undefined = no memory (plugin absent/disabled).
+  const runTurn = useCallback(async (wire: ChatMessage[], memoryContext?: string) => {
     isSendingRef.current = true;
     setSending(true);
     setErr(null);
@@ -482,6 +490,8 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
         // must survive into the final transcript (base is stale by then).
         const updated: Msg[] = [...historyRef.current, { role: "assistant", text: full }];
         commitHistory(updated);
+        // Memory capture: the reply is stored alongside the user message.
+        ctx.events.emit("message", { role: "assistant", text: full, ts: Date.now() });
         setStreaming("");
         setThinking("");
         isSendingRef.current = false;
@@ -522,7 +532,7 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
         setSending(false);
         dismissAsk();
       },
-    });
+    }, memoryContext);
   }, [ctx, onStreamStart, onStreamToken, onStreamDone, commitHistory, dismissAsk]);
 
   const sendText = useCallback(async (text: string) => {
@@ -541,8 +551,14 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
     setInput("");
     const next: Msg[] = [...historyRef.current, { role: "user", text }];
     commitHistory(next);
-    await runTurn(buildWire(next));
-  }, [runTurn, commitHistory]);
+    // Memory plugin integration (see ./net/memory.ts): the capture event
+    // lands in the memory plugin's vector store, and its recall block for
+    // this message rides in the system prompt. Both degrade to no-ops when
+    // the memory plugin is absent/disabled/unconfigured.
+    ctx.events.emit("message", { role: "user", text, ts: Date.now() });
+    const memoryContext = await fetchMemoryContext(text);
+    await runTurn(buildWire(next), memoryContext);
+  }, [ctx, runTurn, commitHistory]);
 
   const stop = useCallback(() => {
     if (!isSendingRef.current) return;

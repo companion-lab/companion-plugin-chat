@@ -47,7 +47,10 @@ export class RouterClient {
     return this.aborter !== null;
   }
 
-  async chat(messages: ChatMessage[], h: ClientEvents) {
+  /** `memoryContext` is the memory plugin's recall block for this turn (see
+   *  net/memory.ts); ""/undefined = no memory. Threaded into the provider
+   *  request so it lands in the system prompt, not as a wire message. */
+  async chat(messages: ChatMessage[], h: ClientEvents, memoryContext?: string) {
     const ac = new AbortController();
     this.aborter = ac;
     console.log("[llm] ── request ──");
@@ -63,6 +66,7 @@ export class RouterClient {
       result = await this.provider.chat({
         messages,
         signal: ac.signal,
+        memoryContext: memoryContext || undefined,
         onToken: (t) => h.onToken(t),
         onThinking: (t) => h.onThinking?.(t),
         onEmotion: (e) => h.onEmotion(e),

@@ -28,6 +28,11 @@ export type ProviderConfig = {
 export type ProviderRequest = {
   messages: ChatMessage[];
   signal: AbortSignal;
+  /** Memory plugin recall block for this turn's user message ("" when the
+   *  memory plugin is absent/disabled). Appended to the system prompt —
+   *  Anthropic/Gemini drop non-leading system messages, so it must ride in
+   *  the single system message rather than as a wire system message. */
+  memoryContext?: string;
   onToken?: (t: string) => void;
   /** Reasoning deltas from thinking models (reasoning_content, thinking
    *  blocks, thought summaries). Never goes to TTS; display only. */

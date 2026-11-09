@@ -27,6 +27,7 @@ import {
   finalAvatarResult,
 } from "../avatar";
 import { doFetch, canStream } from "../fetch";
+import { openAIToolResultContent, convoHasMedia, stripConvoMedia } from "../media-parts";
 import {
   readSse,
   extractPartialText,
@@ -43,6 +44,7 @@ export class OpenAIProvider implements Provider {
   async chat({
     messages,
     signal,
+    memoryContext,
     onToken,
     onThinking,
     onEmotion,
@@ -68,7 +70,7 @@ export class OpenAIProvider implements Provider {
     const hint = mcpSystemHint(mcpTools);
     const openAITools = toOpenAITools(mcpTools);
     // Raw OpenAI message list (supports tool role); converted at the end.
-    let convo: any[] = buildMessages(messages, this.cfg.persona).map((m) => ({
+    let convo: any[] = buildMessages(messages, this.cfg.persona, memoryContext).map((m) => ({
       role: m.role,
       content: msgText(m),
     }));
@@ -139,6 +141,20 @@ export class OpenAIProvider implements Provider {
             `[llm] forced avatar_response rejected (HTTP ${res.status}), retrying without tool_choice`,
           );
           avatarToolDisabled = true;
+          step--;
+          continue;
+        }
+        // Servers without multimodal message support (or older Ollama builds)
+        // reject image_url/input_audio parts. Strip them once and retry with
+        // a note so the turn still completes as text.
+        if (
+          convoHasMedia(convo) &&
+          (res.status === 400 || res.status === 422 || res.status === 404)
+        ) {
+          console.warn(
+            `[llm] media parts rejected (HTTP ${res.status}), retrying with media stripped`,
+          );
+          stripConvoMedia(convo);
           step--;
           continue;
         }
@@ -286,7 +302,7 @@ export class OpenAIProvider implements Provider {
             convo.push({ role: "assistant", content: content || null });
             convo.push({
               role: "user",
-              content: toolResultMessage(fb.qualified, output, goal),
+              content: openAIToolResultContent(fb.qualified, output, goal),
             });
             continue;
           }
@@ -344,7 +360,7 @@ export class OpenAIProvider implements Provider {
         convo.push({
           role: "tool",
           tool_call_id: c.id,
-          content: toolResultMessage(c.qualified, output, goal),
+          content: openAIToolResultContent(c.qualified, output, goal),
         });
       }
     }

@@ -29,6 +29,7 @@ import {
   finalAvatarResult,
 } from "../avatar";
 import { doFetch, canStream, throwIfHttpError } from "../fetch";
+import { geminiToolResultParts } from "../media-parts";
 import { readSse } from "../sse";
 
 export class GeminiProvider implements Provider {
@@ -38,6 +39,7 @@ export class GeminiProvider implements Provider {
   async chat({
     messages,
     signal,
+    memoryContext,
     onToken,
     onThinking,
   }: ProviderRequest): Promise<ProviderResult> {
@@ -54,7 +56,7 @@ export class GeminiProvider implements Provider {
       console.log("[mcp] idle for this message");
     const hint = mcpSystemHint(mcpTools);
     const declarations = toGeminiDeclarations(mcpTools);
-    const builtBase = buildMessages(messages, this.cfg.persona);
+    const builtBase = buildMessages(messages, this.cfg.persona, memoryContext);
     const sysBase = msgText(builtBase[0]);
     // Gemini contents (model/user only); tool I/O replays as text parts.
     let contents: any[] = builtBase
@@ -164,9 +166,7 @@ export class GeminiProvider implements Provider {
               { role: "model", parts: [{ text: accText }] },
               {
                 role: "user",
-                parts: [
-                  { text: toolResultMessage(fb.qualified, output, goal) },
-                ],
+                parts: geminiToolResultParts(fb.qualified, output, goal),
               },
             ];
             continue;
@@ -238,7 +238,7 @@ export class GeminiProvider implements Provider {
           ...contents,
           {
             role: "user",
-            parts: [{ text: toolResultMessage(c.qualified, output, goal) }],
+            parts: geminiToolResultParts(c.qualified, output, goal),
           },
         ];
       }

@@ -278,6 +278,40 @@ export function keywordFallback(
     }
   }
 
+  // Perception intents route to the vision plugin's capture tools before the
+  // browser branches, and only fire once per tool per turn: after a capture
+  // the model should be describing what it saw, not capturing in a loop.
+  // (Alarm requests above return first, so they can never be hijacked.)
+  const attempted = new Set(callsSoFar.map((c) => c.qualified));
+  const visionListen = tools.find((t) => toolName(t.qualified) === "listen");
+  const visionCamera = tools.find((t) => toolName(t.qualified) === "capture_camera");
+  const visionScreen = tools.find((t) => toolName(t.qualified) === "capture_screen");
+  if (
+    visionListen &&
+    !attempted.has(visionListen.qualified) &&
+    /\b(listen|hear|ambient|what('s| is)? that (sound|noise)|music|audio)\b/i.test(text)
+  ) {
+    const dur = /(\d{1,2})\s*(seconds?|secs?)\b/i.exec(text);
+    return {
+      qualified: visionListen.qualified,
+      args: dur ? { seconds: Number(dur[1]) } : {},
+    };
+  }
+  if (
+    visionCamera &&
+    !attempted.has(visionCamera.qualified) &&
+    /\b(camera|webcam|look at me|what do you see|what do i look|take a (photo|picture|selfie))\b/i.test(text)
+  ) {
+    return { qualified: visionCamera.qualified, args: {} };
+  }
+  if (
+    visionScreen &&
+    !attempted.has(visionScreen.qualified) &&
+    /\b(screenshot|screen capture|my screen|the screen|read my screen|check my screen)\b/i.test(text)
+  ) {
+    return { qualified: visionScreen.qualified, args: {} };
+  }
+
   if (nav && /\b(open|navigate|browse|go to|localhost)\b/i.test(text)) {
     const m =
       /(https?:\/\/[^\s"'<>]+|localhost(?::\d+)?(?:\/[^\s"'<>]*)?)/i.exec(text);
