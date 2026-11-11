@@ -167,6 +167,21 @@ jobs:
             exit 1
           fi
 
+          # Frontend-only plugins build one identical zip per matrix platform,
+          # so every artifact lands in dist/ under the same filename. Uploading
+          # the same asset name several times makes the release uploads race
+          # each other and can publish a corrupt zip — dedupe to a single
+          # upload per filename before creating/uploading the release.
+          declare -A seen=()
+          unique=()
+          for f in "${files[@]}"; do
+            if [ -z "${seen[$f]:-}" ]; then
+              seen[$f]=1
+              unique+=("$f")
+            fi
+          done
+          files=("${unique[@]}")
+
           name=$(node -p "require('./manifest.json').name")
           version=$(node -p "require('./manifest.json').version")
           description=$(node -p "require('./manifest.json').description")
