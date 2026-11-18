@@ -33,6 +33,12 @@ export type ApiSettings = {
   key: string;
   model: string;
   opacity: number;
+  /** Model context window in tokens — drives the usage indicator and the
+   *  auto-compact trigger (net/compact.ts). Lower it for local models. */
+  contextWindow: number;
+  /** Summarize older history into a compact note when projected context
+   *  reaches COMPACT_THRESHOLD of contextWindow. */
+  autoCompact: boolean;
 };
 
 export type PersonaSettings = {
@@ -47,6 +53,8 @@ export const DEFAULT_API_SETTINGS: ApiSettings = {
   key: "",
   model: "gpt-4o-mini",
   opacity: 1.0,
+  contextWindow: 128_000,
+  autoCompact: true,
 };
 
 export const DEFAULT_PERSONA_SETTINGS: PersonaSettings = {
@@ -109,6 +117,16 @@ function normalizeApi(value: unknown): ApiSettings {
       typeof v.opacity === "number" && Number.isFinite(v.opacity)
         ? v.opacity
         : DEFAULT_API_SETTINGS.opacity,
+    contextWindow:
+      typeof v.contextWindow === "number" &&
+      Number.isFinite(v.contextWindow) &&
+      v.contextWindow >= 256
+        ? Math.floor(v.contextWindow)
+        : DEFAULT_API_SETTINGS.contextWindow,
+    autoCompact:
+      typeof v.autoCompact === "boolean"
+        ? v.autoCompact
+        : DEFAULT_API_SETTINGS.autoCompact,
     key: typeof v.key === "string" ? v.key : "",
   };
 }

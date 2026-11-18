@@ -58,6 +58,13 @@ export type OpenAiDeltaState = {
   finishReason: string;
   frames: number;
   calls: Map<number, OpenAiToolCallAcc>;
+  /** Token usage from the server, when it reports one (OpenAI itself only
+   *  with stream_options.include_usage, which we don't send — old local
+   *  servers reject it; many compatible servers include usage anyway, either
+   *  on the final choices frame or as a standalone usage-only frame with an
+   *  empty choices array). Captured before the choices guard so both shapes
+   *  land. Absent = caller falls back to token estimation. */
+  usage?: { promptTokens: number; completionTokens: number };
 };
 
 export function openAiDeltaState(): OpenAiDeltaState {
@@ -72,6 +79,17 @@ export function applyOpenAiDelta(st: OpenAiDeltaState, data: string): void {
     chunk = JSON.parse(data);
   } catch {
     return;
+  }
+  // Usage rides on the last frame (or a standalone one) — keep the latest.
+  if (
+    chunk?.usage &&
+    typeof chunk.usage === "object" &&
+    Number.isFinite(chunk.usage.prompt_tokens)
+  ) {
+    st.usage = {
+      promptTokens: Number(chunk.usage.prompt_tokens),
+      completionTokens: Number(chunk.usage.completion_tokens) || 0,
+    };
   }
   const choices = chunk?.choices;
   if (!Array.isArray(choices) || !choices.length) return;

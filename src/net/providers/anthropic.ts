@@ -3,8 +3,10 @@ import type {
   ProviderConfig,
   ProviderRequest,
   ProviderResult,
+  ProviderUsage,
   McpNativeCall,
 } from "../types";
+import type { ChatMessage } from "../protocol";
 import {
   fetchMcpTools,
   mcpSystemHint,
@@ -76,6 +78,10 @@ export class AnthropicProvider implements Provider {
       .map((m) => ({ role: m.role, content: msgText(m) }));
     const goal = originalGoal(convo);
     const callsSoFar: Array<{ qualified: string; args: unknown }> = [];
+    // Context-fill detection (net/compact.ts): see openai.ts. Anthropic puts
+    // input tokens on message_start and cumulative output tokens on
+    // message_delta.
+    let lastUsage: ProviderUsage | undefined;
 
     for (let step = 0; step <= MCP_MAX_STEPS; step++) {
       const body = {
@@ -100,7 +106,15 @@ export class AnthropicProvider implements Provider {
         signal,
       });
       await throwIfHttpError(res);
-      if (!canStream(res)) return this.chatNonStream(body, headers, signal);
+      if (!canStream(res)) {
+        const nr = await this.chatNonStream(
+          body,
+          headers,
+          signal,
+          (u) => { lastUsage = u; },
+        );
+        return { ...nr, usage: lastUsage };
+      }
       type Block = {
         kind: "avatar" | "mcp" | "text" | "thinking";
         id: string;
@@ -110,12 +124,21 @@ export class AnthropicProvider implements Provider {
       };
       const blocks = new Map<number, Block>();
       const st = { emitted: "" };
+      let stepIn = 0;
+      let stepOut = 0;
       await readSse(res, signal, (data) => {
         let chunk: any;
         try {
           chunk = JSON.parse(data);
         } catch {
           return;
+        }
+        if (chunk?.type === "message_start") {
+          const n = Number(chunk.message?.usage?.input_tokens);
+          if (Number.isFinite(n)) stepIn = n;
+        } else if (chunk?.type === "message_delta") {
+          const n = Number(chunk.usage?.output_tokens);
+          if (Number.isFinite(n)) stepOut = n;
         }
         if (chunk?.type === "content_block_start") {
           const cb = chunk.content_block ?? {};
@@ -154,6 +177,15 @@ export class AnthropicProvider implements Provider {
           }
         }
       });
+      if (stepIn || stepOut) {
+        lastUsage = {
+          // A server that omits input tokens keeps the previous turn's
+          // (larger) value — overestimating only makes compaction fire
+          // earlier, which is the safe direction.
+          inputTokens: stepIn || lastUsage?.inputTokens || 0,
+          outputTokens: stepOut || lastUsage?.outputTokens || 0,
+        };
+      }
       const ordered = [...blocks.entries()]
         .sort((a, b) => a[0] - b[0])
         .map(([, b]) => b);
@@ -241,6 +273,7 @@ export class AnthropicProvider implements Provider {
           ...parsed,
           text: finalText,
           mcpCalls: callsSoFar.map((c) => c.qualified),
+          usage: lastUsage,
         };
       }
       const freshIds = new Set(
@@ -320,6 +353,7 @@ export class AnthropicProvider implements Provider {
     body: Record<string, unknown>,
     headers: Record<string, string>,
     signal: AbortSignal,
+    onUsage?: (u: ProviderUsage) => void,
   ): Promise<ProviderResult> {
     const base = this.cfg.url.replace(/\/+$/, "").replace(/\/v1$/, "");
     const norm = {
@@ -335,6 +369,16 @@ export class AnthropicProvider implements Provider {
     });
     await throwIfHttpError(res);
     const raw = await res.json();
+    if (
+      raw?.usage &&
+      typeof raw.usage === "object" &&
+      Number.isFinite(raw.usage.input_tokens)
+    ) {
+      onUsage?.({
+        inputTokens: Number(raw.usage.input_tokens),
+        outputTokens: Number(raw.usage.output_tokens) || 0,
+      });
+    }
     const avatar = raw?.content?.find(
       (b: any) => b.type === "tool_use" && b.name === "avatar_response",
     );
@@ -342,5 +386,43 @@ export class AnthropicProvider implements Provider {
     return finalAvatarResult(
       typeof json === "string" ? json : JSON.stringify(json),
     );
+  }
+
+  /** Plain completion for history compaction (net/compact.ts): no tools, no
+   *  avatar shaping — just the text. */
+  async complete(messages: ChatMessage[], signal: AbortSignal): Promise<string> {
+    const base = this.cfg.url.replace(/\/+$/, "").replace(/\/v1$/, "");
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "anthropic-version": "2023-06-01",
+    };
+    if (this.cfg.apiKey) headers["x-api-key"] = this.cfg.apiKey;
+    // The Messages API rejects system roles inside messages — lift a leading
+    // system message into the system field (compaction sends one).
+    const hasSystem = messages[0]?.role === "system";
+    const rest = hasSystem ? messages.slice(1) : messages;
+    const body: Record<string, unknown> = {
+      model: this.cfg.model,
+      max_tokens: 1024,
+      messages: rest.map((m) => ({ role: m.role, content: msgText(m) })),
+      stream: false,
+    };
+    if (hasSystem) body.system = msgText(messages[0]);
+    const res = await doFetch(`${base}/v1/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status}: ${t.slice(0, 200)}`);
+    }
+    const raw = await res.json();
+    const blocks = Array.isArray(raw?.content) ? raw.content : [];
+    return blocks
+      .filter((b: any) => b?.type === "text" && typeof b.text === "string")
+      .map((b: any) => b.text)
+      .join("");
   }
 }

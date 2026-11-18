@@ -3,8 +3,10 @@ import type {
   ProviderConfig,
   ProviderRequest,
   ProviderResult,
+  ProviderUsage,
   McpNativeCall,
 } from "../types";
+import type { ChatMessage } from "../protocol";
 import { fetchMcpTools, mcpSystemHint, toOpenAITools, execMcpCall } from "../tools";
 import { askUserTool } from "../ask-user";
 import {
@@ -80,6 +82,10 @@ export class OpenAIProvider implements Provider {
 
     const goal = originalGoal(convo);
     const callsSoFar: Array<{ qualified: string; args: unknown }> = [];
+    // Context-fill detection (net/compact.ts): the last request is the
+    // largest (the tool loop only appends), so its input tokens are the
+    // number that matters. Kept across steps, reported on the final result.
+    let lastUsage: ProviderUsage | undefined;
     // Some OpenAI-compatible servers (older Ollama builds) reject
     // stream:true or stream+tools. Flip off once and reuse for the
     // rest of the conversation.
@@ -216,6 +222,12 @@ export class OpenAIProvider implements Provider {
           continue;
         }
         content = acc.content;
+        if (acc.usage) {
+          lastUsage = {
+            inputTokens: acc.usage.promptTokens,
+            outputTokens: acc.usage.completionTokens,
+          };
+        }
         // Stream the tail too (plain-text replies never matched while
         // streaming, so nothing was emitted yet).
         emitFinalText(content, st, onToken);
@@ -241,6 +253,16 @@ export class OpenAIProvider implements Provider {
         }
       } else {
         const raw = await res.json();
+        if (
+          raw?.usage &&
+          typeof raw.usage === "object" &&
+          Number.isFinite(raw.usage.prompt_tokens)
+        ) {
+          lastUsage = {
+            inputTokens: Number(raw.usage.prompt_tokens),
+            outputTokens: Number(raw.usage.completion_tokens) || 0,
+          };
+        }
         const msg = raw?.choices?.[0]?.message;
         if (typeof msg?.reasoning_content === "string" && msg.reasoning_content)
           onThinking?.(msg.reasoning_content);
@@ -326,6 +348,7 @@ export class OpenAIProvider implements Provider {
         return {
           ...finalAvatarResult(content, tags),
           mcpCalls: callsSoFar.map((c) => c.qualified),
+          usage: lastUsage,
         };
       }
       calls = dropDuplicateAlarms(calls, callsSoFar);
@@ -365,5 +388,34 @@ export class OpenAIProvider implements Provider {
       }
     }
     throw new Error("mcp loop exhausted");
+  }
+
+  /** Plain completion for history compaction (net/compact.ts): no tools, no
+   *  streaming, no avatar shaping — just the text. */
+  async complete(messages: ChatMessage[], signal: AbortSignal): Promise<string> {
+    const base = this.cfg.url.replace(/\/+$/, "").replace(/\/v1$/, "");
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (this.cfg.apiKey) headers.Authorization = `Bearer ${this.cfg.apiKey}`;
+    const res = await doFetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: this.cfg.model,
+        messages: messages.map((m) => ({ role: m.role, content: msgText(m) })),
+        stream: false,
+      }),
+      signal,
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status}: ${t.slice(0, 200)}`);
+    }
+    const raw = await res.json();
+    const msg = raw?.choices?.[0]?.message;
+    return typeof msg?.content === "string"
+      ? msg.content
+      : JSON.stringify(msg?.content ?? {});
   }
 }

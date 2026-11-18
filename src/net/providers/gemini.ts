@@ -3,8 +3,10 @@ import type {
   ProviderConfig,
   ProviderRequest,
   ProviderResult,
+  ProviderUsage,
   McpNativeCall,
 } from "../types";
+import type { ChatMessage } from "../protocol";
 import {
   fetchMcpTools,
   mcpSystemHint,
@@ -67,6 +69,9 @@ export class GeminiProvider implements Provider {
       }));
     const goal = originalGoal(builtBase.filter((m) => m.role !== "system"));
     const callsSoFar: Array<{ qualified: string; args: unknown }> = [];
+    // Context-fill detection (net/compact.ts): see openai.ts. Gemini reports
+    // cumulative usageMetadata on every chunk.
+    let lastUsage: ProviderUsage | undefined;
 
     for (let step = 0; step <= MCP_MAX_STEPS; step++) {
       const body: Record<string, unknown> = {
@@ -98,7 +103,10 @@ export class GeminiProvider implements Provider {
         signal,
       });
       await throwIfHttpError(res);
-      if (!canStream(res)) return this.chatNonStream(body, signal);
+      if (!canStream(res)) {
+        const nr = await this.chatNonStream(body, signal, (u) => { lastUsage = u; });
+        return { ...nr, usage: lastUsage };
+      }
       let accText = "";
       // Thought summaries stream as their own parts; keep them out of the
       // reply text (they must not reach TTS or the final avatar parse).
@@ -107,12 +115,21 @@ export class GeminiProvider implements Provider {
       const mcpCalls: McpNativeCall[] = [];
       const seenCalls = new Set<string>();
       const st = { emitted: "" };
+      let stepIn = 0;
+      let stepOut = 0;
       await readSse(res, signal, (data) => {
         let chunk: any;
         try {
           chunk = JSON.parse(data);
         } catch {
           return;
+        }
+        const um = chunk?.usageMetadata;
+        if (um && typeof um === "object") {
+          const p = Number(um.promptTokenCount);
+          const c = Number(um.candidatesTokenCount);
+          if (Number.isFinite(p)) stepIn = p;
+          if (Number.isFinite(c)) stepOut = c;
         }
         const parts = chunk?.candidates?.[0]?.content?.parts ?? [];
         for (const p of parts) {
@@ -142,6 +159,12 @@ export class GeminiProvider implements Provider {
         }
       });
       emitFinalText(accText, st, onToken);
+      if (stepIn || stepOut) {
+        lastUsage = {
+          inputTokens: stepIn || lastUsage?.inputTokens || 0,
+          outputTokens: stepOut || lastUsage?.outputTokens || 0,
+        };
+      }
       if (!mcpCalls.length || step === MCP_MAX_STEPS) {
         if (!mcpCalls.length && step < MCP_MAX_STEPS && mcpArmed) {
           const lastUser = [...contents]
@@ -204,6 +227,7 @@ export class GeminiProvider implements Provider {
           ...parsed,
           text: finalText,
           mcpCalls: callsSoFar.map((c) => c.qualified),
+          usage: lastUsage,
         };
       }
       const freshCalls = dropDuplicateAlarms(mcpCalls, callsSoFar);
@@ -249,6 +273,7 @@ export class GeminiProvider implements Provider {
   private async chatNonStream(
     body: Record<string, unknown>,
     signal: AbortSignal,
+    onUsage?: (u: ProviderUsage) => void,
   ): Promise<ProviderResult> {
     const base = this.cfg.url.replace(/\/+$/, "").replace(/\/v1(beta)?$/, "");
     const url = `${base}/v1beta/models/${encodeURIComponent(this.cfg.model)}:generateContent?key=${encodeURIComponent(this.cfg.apiKey)}`;
@@ -260,7 +285,53 @@ export class GeminiProvider implements Provider {
     });
     await throwIfHttpError(res);
     const raw = await res.json();
+    const um = raw?.usageMetadata;
+    if (um && typeof um === "object" && Number.isFinite(Number(um.promptTokenCount))) {
+      onUsage?.({
+        inputTokens: Number(um.promptTokenCount),
+        outputTokens: Number(um.candidatesTokenCount) || 0,
+      });
+    }
     const text = raw?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
     return finalAvatarResult(text);
+  }
+
+  /** Plain completion for history compaction (net/compact.ts): no tools, no
+   *  structured response schema — just the text. */
+  async complete(messages: ChatMessage[], signal: AbortSignal): Promise<string> {
+    const base = this.cfg.url.replace(/\/+$/, "").replace(/\/v1(beta)?$/, "");
+    // systemInstruction carries a leading system message (compaction sends
+    // one); the rest map to user/model contents like chat() does.
+    const hasSystem = messages[0]?.role === "system";
+    const rest = hasSystem ? messages.slice(1) : messages;
+    const body: Record<string, unknown> = {
+      contents: rest.map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: msgText(m) }],
+      })),
+    };
+    if (hasSystem) {
+      body.systemInstruction = {
+        role: "system",
+        parts: [{ text: msgText(messages[0]) }],
+      };
+    }
+    const url = `${base}/v1beta/models/${encodeURIComponent(this.cfg.model)}:generateContent?key=${encodeURIComponent(this.cfg.apiKey)}`;
+    const res = await doFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status}: ${t.slice(0, 200)}`);
+    }
+    const raw = await res.json();
+    const parts = raw?.candidates?.[0]?.content?.parts ?? [];
+    return parts
+      .filter((p: any) => typeof p?.text === "string")
+      .map((p: any) => p.text)
+      .join("");
   }
 }

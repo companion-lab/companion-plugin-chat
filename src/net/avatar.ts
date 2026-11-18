@@ -146,7 +146,9 @@ export const SYSTEM_PROMPT =
   "Place double or triple tags at the start or end of sentences for emphasis. " +
   "Example: <laugh><laugh> Hello! How can I help you today? <breath><breath>";
 
-function buildSystemPrompt(
+// Exported for the context-usage estimate (ChatPanel): the built system
+// prompt is part of every request, so the no-usage fallback must count it.
+export function buildSystemPrompt(
   persona?: ProviderConfig["persona"],
   memoryContext?: string,
 ): string {

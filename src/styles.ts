@@ -213,6 +213,63 @@ const CHAT_CSS = `/* Confirm modal + buttons for the main window. It loads no ot
   flex: 1;
 }
 
+/* Context usage chip (auto-compact indicator) */
+.cp-ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: #5d6789;
+  font-variant-numeric: tabular-nums;
+}
+
+.cp-ctx-bar {
+  width: 44px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+.cp-ctx-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: #9aa6d1;
+  transition: width 0.3s ease, background 0.3s ease;
+}
+
+.cp-ctx-warn {
+  color: #ffb454;
+}
+
+.cp-ctx-warn .cp-ctx-fill {
+  background: #ffb454;
+}
+
+.cp-ctx-hot {
+  color: #ff7d97;
+}
+
+.cp-ctx-hot .cp-ctx-fill {
+  background: #ff7d97;
+}
+
+/* Compacted-history divider (summary note in the transcript) */
+.cp-compact-note {
+  align-self: center;
+  max-width: 90%;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1.45;
+  color: #8a94b8;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px dashed rgba(154, 166, 209, 0.25);
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: help;
+}
+
 .cp-clear {
   display: inline-flex;
   align-items: center;

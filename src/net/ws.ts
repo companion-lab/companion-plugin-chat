@@ -2,7 +2,7 @@
 // type now coming from ./types).
 
 import type { ChatMessage } from "./protocol";
-import type { Emotion, Motion } from "./types";
+import type { Emotion, Motion, ProviderUsage } from "./types";
 import type { Provider, ProviderConfig, ProviderKind } from "./providers";
 import { createProvider } from "./providers";
 
@@ -17,6 +17,10 @@ export type ClientEvents = {
   /** Fired instead of onDone/onError when cancel() aborts the stream. */
   onAbort?: () => void;
   onMcpCalls?: (calls: string[]) => void;
+  /** Token usage of the final (largest) request of the turn — the real
+   *  context fill the auto-compact trigger and the header indicator read.
+   *  Absent when the server reports no usage. */
+  onUsage?: (u: ProviderUsage) => void;
 };
 
 export class RouterClient {
@@ -90,10 +94,21 @@ export class RouterClient {
     console.log("[llm] emotion: " + result.emotion);
     console.log("[llm] motion:  " + result.motion);
     if (result.mcpCalls.length) console.log("[llm] mcp:     " + result.mcpCalls.join(", "));
+    if (result.usage)
+      console.log("[llm] usage:   " + result.usage.inputTokens + " in / " + result.usage.outputTokens + " out");
 
+    if (result.usage) h.onUsage?.(result.usage);
     h.onEmotion(result.emotion);
     h.onMotion(result.motion);
     h.onMcpCalls?.(result.mcpCalls);
     h.onDone(result.text);
+  }
+
+  /** Plain completion (history compaction — net/compact.ts): no tools, no
+   *  avatar shaping, no streaming. One-shot; cancellation is via the signal
+   *  the caller passes in. */
+  async complete(messages: ChatMessage[], signal: AbortSignal): Promise<string> {
+    console.log("[llm] ── complete ──");
+    return this.provider.complete(messages, signal);
   }
 }

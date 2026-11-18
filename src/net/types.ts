@@ -48,11 +48,27 @@ export type ProviderResult = {
   emotion: Emotion;
   motion: Motion;
   mcpCalls: string[];
+  /** Token usage reported by the provider for the FINAL request of the turn
+   *  (the largest one, after tool-loop growth). inputTokens is the actual
+   *  context fill — the auto-compact trigger reads it (see ./ws.ts onUsage,
+   *  net/compact.ts). Absent when the server reports no usage (some local
+   *  OpenAI-compatible endpoints); callers then fall back to estimates. */
+  usage?: ProviderUsage;
+};
+
+export type ProviderUsage = {
+  inputTokens: number;
+  outputTokens: number;
 };
 
 export interface Provider {
   readonly kind: ProviderKind;
   chat(req: ProviderRequest): Promise<ProviderResult>;
+  /** Plain text completion without tools or avatar shaping — history
+   *  compaction summarizes older messages through this (net/compact.ts).
+   *  A leading system message is allowed; providers lift it into their
+   *  system field/first message as their API requires. */
+  complete(messages: ChatMessage[], signal: AbortSignal): Promise<string>;
 }
 
 export type McpWireTool = {

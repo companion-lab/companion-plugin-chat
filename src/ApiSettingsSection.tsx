@@ -12,7 +12,7 @@
 //   deletes both the namespaced and the legacy global account.
 // - UI kit components come from ctx.ui (the host's shared kit).
 
-import { useSyncExternalStore, type ChangeEvent } from "react";
+import { useSyncExternalStore, useState, type ChangeEvent } from "react";
 import type { PluginContext } from "@companion-lab/plugin";
 import type { ProviderKind } from "./net/providers";
 import {
@@ -21,6 +21,7 @@ import {
   subscribeChatSettings,
   type ApiSettings,
 } from "./settings";
+import { COMPACT_THRESHOLD } from "./context";
 import { injectStyles } from "./styles";
 
 const PROVIDERS: {
@@ -31,6 +32,7 @@ const PROVIDERS: {
   defaultModel: string;
   keyHint: string;
   note: string;
+  contextWindow: number;
 }[] = [
   {
     id: "openai",
@@ -40,6 +42,7 @@ const PROVIDERS: {
     defaultModel: "gpt-4o-mini",
     keyHint: "sk-...",
     note: "Works with OpenAI, LocalAI, or any OpenAI-compatible endpoint you host locally.",
+    contextWindow: 128_000,
   },
   {
     id: "anthropic",
@@ -49,6 +52,7 @@ const PROVIDERS: {
     defaultModel: "claude-3-5-sonnet-latest",
     keyHint: "sk-ant-...",
     note: "Official Anthropic Messages API. Provide your Claude console key.",
+    contextWindow: 200_000,
   },
   {
     id: "gemini",
@@ -58,6 +62,7 @@ const PROVIDERS: {
     defaultModel: "gemini-1.5-flash",
     keyHint: "AIza...",
     note: "Google Gemini API using the Generative Language endpoint.",
+    contextWindow: 1_000_000,
   },
 ];
 
@@ -66,6 +71,10 @@ export function ApiSettingsSection({ ctx }: { ctx: PluginContext }) {
   const api = useSyncExternalStore(subscribeChatSettings, getApiSettings);
   const { FormField, SectionCard, TextInput, Button } = ctx.ui as Record<string, any>;
   const selected = PROVIDERS.find((p) => p.id === api.provider) ?? PROVIDERS[0];
+  // Context-window draft: commit valid numbers while typing, snap the field
+  // back to the normalized value on blur (the store clamps/defaults).
+  const [cwDraft, setCwDraft] = useState<string | null>(null);
+  const cwValue = cwDraft ?? String(api.contextWindow);
 
   const onChange = (next: ApiSettings) => saveApiSettings(next);
 
@@ -94,6 +103,7 @@ export function ApiSettingsSection({ ctx }: { ctx: PluginContext }) {
                   provider: p.id,
                   url: p.defaultUrl,
                   model: p.defaultModel,
+                  contextWindow: p.contextWindow,
                 })
               }
             >
@@ -142,6 +152,40 @@ export function ApiSettingsSection({ ctx }: { ctx: PluginContext }) {
           onChange={(e: ChangeEvent<HTMLInputElement>) => onChange({ ...api, model: e.target.value })}
           placeholder={selected.defaultModel}
         />
+      </FormField>
+
+      <FormField
+        label="Context Window (tokens)"
+        hint="Lower this for local models (e.g. 8192) — it drives the usage indicator and auto-compact"
+      >
+        <TextInput
+          value={cwValue}
+          onChange={(e: ChangeEvent<HTMLInputElement>) => {
+            const raw = e.target.value;
+            setCwDraft(raw);
+            const n = Number(raw);
+            if (Number.isFinite(n) && n >= 256) {
+              onChange({ ...api, contextWindow: Math.floor(n) });
+            }
+          }}
+          onBlur={() => setCwDraft(null)}
+        />
+      </FormField>
+
+      <FormField
+        label="Auto-compact history"
+        hint={`Summarize older messages into a short note when the context reaches ${Math.round(COMPACT_THRESHOLD * 100)}% of the window`}
+      >
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-primary)" }}>
+          <input
+            type="checkbox"
+            checked={api.autoCompact}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              onChange({ ...api, autoCompact: e.target.checked })
+            }
+          />
+          Enabled
+        </label>
       </FormField>
     </SectionCard>
   );

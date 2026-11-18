@@ -13,7 +13,16 @@
 import type { PluginContext } from "@companion-lab/plugin";
 import { tauriListen } from "./tauri";
 
-export type Msg = { role: "user" | "assistant"; text: string };
+// A history entry is a chat message, or — with role "system" + kind
+// "compact" — the auto-compact summary note (net/compact.ts): it renders as
+// a collapsed divider, stays out of the memory backfill, and buildWire
+// turns it into the summary user message instead of re-sending the older
+// messages it stands for.
+export type Msg = {
+  role: "user" | "assistant" | "system";
+  text: string;
+  kind?: "compact";
+};
 
 export const MAX_STORED_MSGS = 100;
 
@@ -41,13 +50,16 @@ function notify(): void {
 function sanitize(parsed: unknown): Msg[] {
   if (!Array.isArray(parsed)) return [];
   return parsed
-    .filter(
-      (m): m is Msg =>
-        !!m &&
-        typeof m === "object" &&
-        ((m as Msg).role === "user" || (m as Msg).role === "assistant") &&
-        typeof (m as Msg).text === "string",
-    )
+    .filter((m): m is Msg => {
+      if (!m || typeof m !== "object" || typeof (m as Msg).text !== "string") {
+        return false;
+      }
+      const role = (m as Msg).role;
+      // "system" entries are only ever the auto-compact summary note —
+      // anything else would leak into the wire unprompted.
+      if (role === "system") return (m as Msg).kind === "compact";
+      return role === "user" || role === "assistant";
+    })
     .slice(-MAX_STORED_MSGS);
 }
 
@@ -162,9 +174,11 @@ function startMemoryBackfill(ctx: PluginContext): void {
     pendingBackfill = null;
     if (!pending?.length) return;
     // Synthetic timestamps spaced a minute apart, oldest first, so the
-    // memory browser shows a plausible order.
+    // memory browser shows a plausible order. Compact markers are skipped:
+    // the summary paraphrases messages the store already has.
     const now = Date.now();
     pending.forEach((m, i) => {
+      if (m.role === "system") return;
       ctx.events.emit("message", {
         role: m.role,
         text: m.text,

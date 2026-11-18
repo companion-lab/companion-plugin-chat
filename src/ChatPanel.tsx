@@ -30,13 +30,21 @@
 import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from "react";
 import type { PluginContext, TtsStream } from "@companion-lab/plugin";
 import type { ChatMessage } from "./net/protocol";
+import type { ProviderUsage } from "./net/types";
 import { RouterClient } from "./net/ws";
 import { setAvatarCapabilities } from "./net/capabilities";
+import { buildSystemPrompt } from "./net/avatar";
 import {
   setAskUserHandler,
   clearAskUserHandler,
   type AskUserRequest,
 } from "./net/ask-user";
+import {
+  splitForCompact,
+  summarizeMessages,
+  applyCompact,
+  COMPACT_TIMEOUT_MS,
+} from "./net/compact";
 import { tauriListen, tauriEmit, tauriInvoke } from "./tauri";
 import { normalizeWakeWord, extractWakeCommand } from "./wakeword";
 import { MessageBubble } from "./MessageBubble";
@@ -50,7 +58,12 @@ import {
   subscribeChatHistory,
   type Msg,
 } from "./chat-history";
-import { buildWire } from "./context";
+import {
+  buildWire,
+  estimateTokens,
+  estimateContextTokens,
+  COMPACT_THRESHOLD,
+} from "./context";
 import { fetchMemoryContext } from "./net/memory";
 import {
   getApiSettings,
@@ -139,6 +152,8 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
     clearChatHistory();
     setStreaming("");
     setThinking("");
+    lastUsageRef.current = null;
+    setUsage(null);
   }, []);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState("");
@@ -151,6 +166,13 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
   const clientRef = useRef<RouterClient | null>(null);
   const isSendingRef = useRef(false);
   const pendingQueueRef = useRef<string[]>([]);
+  // Auto-compact (net/compact.ts): server-reported usage of the last turn
+  // (the real context fill), the transient compacting state, and its guard
+  // against concurrent sends while a summary is in flight.
+  const [usage, setUsage] = useState<ProviderUsage | null>(null);
+  const lastUsageRef = useRef<ProviderUsage | null>(null);
+  const [compacting, setCompacting] = useState(false);
+  const compactingRef = useRef(false);
   // Batch token renders: the LLM fires many tokens/sec; coalesce them into
   // one React update per animation frame.
   const streamRafRef = useRef(0);
@@ -377,11 +399,21 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
 
   // ask_user tool calls land here from the provider loop (net/ask-user
   // registry). The question is spoken through the normal token pipeline so
-  // TTS says it; typing, voice, or an option button resolves the turn.
+  // TTS says it; the options follow as their own sentence — a voice-only
+  // user never sees the card buttons. Typing, voice, or an option button
+  // resolves the turn.
   useEffect(() => {
     const handler = (req: AskUserRequest) =>
       new Promise<string>((resolve) => {
         onTokenRef.current?.(` ${req.question}`);
+        if (req.options?.length) {
+          const opts = req.options;
+          const spoken =
+            opts.length === 1
+              ? opts[0]
+              : `${opts.slice(0, -1).join(", ")}, or ${opts[opts.length - 1]}`;
+          onTokenRef.current?.(` Your options: ${spoken}.`);
+        }
         setPendingAsk({ ...req, resolve });
         if (askTimerRef.current !== null) window.clearTimeout(askTimerRef.current);
         askTimerRef.current = window.setTimeout(() => {
@@ -477,6 +509,10 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
       onMotion: (m) => {
         if (m && m !== "none") ctx.avatar.triggerMotion(m);
       },
+      onUsage: (u) => {
+        lastUsageRef.current = u;
+        setUsage(u);
+      },
       onDone: (full) => {
         if (streamRafRef.current) {
           cancelAnimationFrame(streamRafRef.current);
@@ -544,12 +580,15 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
       answerAskRef.current(text);
       return;
     }
-    if (isSendingRef.current) {
+    if (isSendingRef.current || compactingRef.current) {
       pendingQueueRef.current.push(text);
       return;
     }
     setInput("");
-    const next: Msg[] = [...historyRef.current, { role: "user", text }];
+    // Commit first so the bubble appears instantly; memory + compaction
+    // happen between commit and turn.
+    const prev = historyRef.current;
+    const next: Msg[] = [...prev, { role: "user", text }];
     commitHistory(next);
     // Memory plugin integration (see ./net/memory.ts): the capture event
     // lands in the memory plugin's vector store, and its recall block for
@@ -557,8 +596,56 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
     // the memory plugin is absent/disabled/unconfigured.
     ctx.events.emit("message", { role: "user", text, ts: Date.now() });
     const memoryContext = await fetchMemoryContext(text);
-    await runTurn(buildWire(next), memoryContext);
-  }, [ctx, runTurn, commitHistory]);
+    // Auto-compact (net/compact.ts): project this turn's context fill and,
+    // at COMPACT_THRESHOLD of the configured window, summarize older
+    // history first. Any failure just logs — the uncompacted wire still
+    // goes out, chat never blocks on a summary.
+    let base = prev;
+    const lastIn = lastUsageRef.current?.inputTokens ?? 0;
+    const projected =
+      lastIn > 0
+        ? lastIn + estimateTokens(text)
+        : estimateContextTokens(
+            buildWire(base),
+            buildSystemPrompt(persona, memoryContext),
+            memoryContext,
+          ) + estimateTokens(text);
+    if (
+      api.autoCompact &&
+      api.contextWindow > 0 &&
+      projected / api.contextWindow >= COMPACT_THRESHOLD
+    ) {
+      const split = splitForCompact(base);
+      if (split) {
+        compactingRef.current = true;
+        setCompacting(true);
+        try {
+          const summary = await clientRef.current!.complete(
+            summarizeMessages(split.older),
+            AbortSignal.timeout(COMPACT_TIMEOUT_MS),
+          );
+          base = applyCompact(base, split, summary);
+          // The old fill died with the summarized messages; the estimate
+          // path takes over until the next server-reported usage.
+          lastUsageRef.current = null;
+          setUsage(null);
+          // Re-commit so the transcript shows the compact marker ahead of
+          // the new message.
+          commitHistory([...base, { role: "user", text }]);
+        } catch (e) {
+          ctx.log.warn(
+            `auto-compact failed (continuing uncompacted): ${
+              e instanceof Error ? e.message : String(e)
+            }`,
+          );
+        } finally {
+          compactingRef.current = false;
+          setCompacting(false);
+        }
+      }
+    }
+    await runTurn(buildWire([...base, { role: "user", text }]), memoryContext);
+  }, [ctx, api, persona, runTurn, commitHistory]);
 
   const stop = useCallback(() => {
     if (!isSendingRef.current) return;
@@ -792,12 +879,37 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
 
   const { ConfirmModal } = ctx.ui as Record<string, any>;
 
+  // Context usage indicator: server-reported fill of the last request when
+  // available, otherwise a chars/4 estimate over system + wire (memory
+  // block unknown at render time — display only; the send-time projection
+  // in sendText uses the same numbers with the real recall block).
+  const usedTokens =
+    usage?.inputTokens ??
+    estimateContextTokens(buildWire(history), buildSystemPrompt(persona), "");
+  const ctxPct =
+    api.contextWindow > 0
+      ? Math.min(100, Math.round((usedTokens / api.contextWindow) * 100))
+      : 0;
+  const ctxWarn = ctxPct >= 60;
+  const ctxHot = ctxPct >= Math.round(COMPACT_THRESHOLD * 100);
+
   return (
     <div className="cp-root">
       <div className="cp-head">
         <span className="cp-head-title">Chat</span>
         {history.length > 0 && (
           <span className="cp-head-count">{history.length}</span>
+        )}
+        {history.length > 0 && api.contextWindow > 0 && (
+          <span
+            className={`cp-ctx${ctxHot ? " cp-ctx-hot" : ctxWarn ? " cp-ctx-warn" : ""}`}
+            title={`~${usedTokens.toLocaleString()} / ${api.contextWindow.toLocaleString()} tokens`}
+          >
+            <span className="cp-ctx-bar">
+              <span className="cp-ctx-fill" style={{ width: `${ctxPct}%` }} />
+            </span>
+            {ctxPct}%
+          </span>
         )}
         <span className="cp-head-spacer" />
         <button
@@ -824,13 +936,26 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
         />
       )}
       <div className="cp-msgs" ref={msgsRef}>
-        {history.map((m, i) => (
-          <MessageBubble key={i} role={m.role} text={m.text} />
-        ))}
+        {history.map((m, i) =>
+          m.role === "system" ? (
+            <div key={i} className="cp-compact-note" title={m.text}>
+              ⚡ Earlier messages compacted into a summary — they stay here but
+              are no longer sent
+            </div>
+          ) : (
+            <MessageBubble key={i} role={m.role} text={m.text} />
+          ),
+        )}
         {sending && !streaming && !thinking && (
           <div className="cp-waiting">
             <span className="cp-live-dot" />
             <span>thinking…</span>
+          </div>
+        )}
+        {compacting && (
+          <div className="cp-waiting">
+            <span className="cp-live-dot" />
+            <span>compacting chat history…</span>
           </div>
         )}
         {thinking && (
