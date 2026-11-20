@@ -3,14 +3,15 @@
 // sections, chat-history, context).
 //
 // Registrations:
-// - "general.chatbox" section (chat box show/hide, moved from the host's
-//   InterfaceSection; the voice-interrupt toggle lives in the stt plugin's
-//   Voice Input section) and "general.persona" section on the General tab,
-//   "connection.api" section (AI backend/provider/key) — same stable ids
-//   the core used, so overrides and user habits carry over unchanged.
-//   This plugin also registers the Connection tab itself (moved from the
-//   voice plugins): the AI backend is the tab's primary card, and the
-//   stt/tts cloud endpoint sections render on it keyed by tabId.
+// - a context-menu item on the avatar window toggling the chat box show/hide
+//   (moved from the host's InterfaceSection, later the General-tab "Chat Box"
+//   section — see chat-box-menu.tsx) and the "general.persona" section on
+//   the General tab, "connection.api" section (AI backend/provider/key) —
+//   the persona/api ids are the same stable ids the core used, so overrides
+//   and user habits carry over unchanged. This plugin also registers the
+//   Connection tab itself (moved from the voice plugins): the AI backend is
+//   the tab's primary card, and the stt/tts cloud endpoint sections render
+//   on it keyed by tabId.
 // - The main-window chat panel via ctx.main.overrideWidget("chatPanel", …):
 //   the host App renders that target with extra props (onEmotion/onMotion,
 //   ttsSpeaking, …) both now and after the slimming step — the panel ignores
@@ -23,9 +24,9 @@
 import { definePlugin, type PluginContext } from "@companion-lab/plugin";
 import { initChatSettings } from "./settings";
 import { initChatHistory } from "./chat-history";
+import { initChatBoxMenu } from "./chat-box-menu";
 import { setAvatarCapabilities } from "./net/capabilities";
 import { ApiSettingsSection } from "./ApiSettingsSection";
-import { ChatBoxSettingsSection } from "./ChatBoxSettingsSection";
 import { PersonaSettingsSection } from "./PersonaSettingsSection";
 import { ChatPanel } from "./ChatPanel";
 
@@ -39,6 +40,10 @@ export default definePlugin((ctx: PluginContext) => {
   // Chat transcript store (ctx.storage "chatHistory", one-time migration
   // from the host's localStorage "companion:chat-history").
   initChatHistory(ctx);
+
+  // Chat box show/hide as a context-menu item on the avatar window (the old
+  // General-tab section is gone — right-click the companion to toggle).
+  initChatBoxMenu(ctx);
 
   // Seed the avatar capabilities snapshot from the live bus (defaults apply
   // until the main window's model is up; the panel refreshes per turn).
@@ -61,15 +66,6 @@ export default definePlugin((ctx: PluginContext) => {
     icon: ({ className }: { className?: string }) => (
       <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0" /><path d="M1.42 9a16 16 0 0 1 21.16 0" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><line x1="12" y1="20" x2="12.01" y2="20" /></svg>
     ),
-  });
-  ctx.settings.registerSection({
-    id: "general.chatbox",
-    tabId: "general",
-    slot: "top",
-    order: 100,
-    component: function ChatBoxSectionViaCtx() {
-      return <ChatBoxSettingsSection ctx={ctx} />;
-    },
   });
   ctx.settings.registerSection({
     id: "general.persona",
