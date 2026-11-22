@@ -6,8 +6,9 @@
 // props beyond the plugin context):
 // - api/provider + persona settings come from the plugin settings store
 //   (./settings.ts) instead of App.tsx props.
-// - Emotion/motion callbacks (host props onEmotion/onMotion) are internal
-//   ctx.avatar.setEmotion/triggerMotion calls.
+// - Reply shaping (emotion/motion etc.) is contributed by whichever plugin
+//   owns the avatar runtime via ctx.reply.register (ReplyContribution); the
+//   panel just forwards parsed reply fields to its `apply`.
 // - Speech goes through ctx.services: streamed reply TTS via
 //   ctx.services.tts().createStream (the host App.tsx used to own the stream;
 //   speaking state is now panel-local), STT via ctx.services.stt() — with the
@@ -32,8 +33,7 @@ import type { PluginContext, TtsStream } from "@companion-lab/plugin";
 import type { ChatMessage } from "./net/protocol";
 import type { ProviderUsage } from "./net/types";
 import { RouterClient } from "./net/ws";
-import { setAvatarCapabilities } from "./net/capabilities";
-import { buildSystemPrompt } from "./net/avatar";
+import { buildSystemPrompt, getReplyContribution } from "./net/reply";
 import {
   setAskUserHandler,
   clearAskUserHandler,
@@ -112,19 +112,6 @@ function readBargeIn(): boolean {
 // hands the host mic shortcut off to us (must match MicShortcutOverlay.tsx).
 const CHAT_PANEL_PRESENT_FLAG = "companion:chat-panel-present";
 
-function refreshAvatarCapabilities(ctx: PluginContext): void {
-  try {
-    const caps = ctx.avatar.describeCapabilities();
-    // No-op bus (settings window / no model yet) reports empty lists — keep
-    // the defaults instead of wiping them.
-    if (caps.emotions.length || caps.motions.length) {
-      setAvatarCapabilities(caps);
-    }
-  } catch {
-    /* keep the current snapshot */
-  }
-}
-
 export function ChatPanel({ ctx }: { ctx: PluginContext }) {
   injectStyles();
 
@@ -183,6 +170,26 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
   const pendingAskRef = useRef<PendingAsk | null>(null);
   pendingAskRef.current = pendingAsk;
   const askTimerRef = useRef<number | null>(null);
+
+  // Reply shaping: fields already applied for the current turn, so a final
+  // record that repeats a mid-stream tag doesn't re-trigger (a repeated
+  // triggerMotion would restart the motion). Reset per turn in runTurn.
+  const appliedReplyRef = useRef<Record<string, unknown>>({});
+  const applyReplyData = useCallback(
+    (data: Record<string, unknown>) => {
+      if (!data || typeof data !== "object") return;
+      const reply = getReplyContribution();
+      if (!reply) return;
+      const fresh: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(data)) {
+        if (appliedReplyRef.current[k] === v) continue;
+        appliedReplyRef.current[k] = v;
+        fresh[k] = v;
+      }
+      if (Object.keys(fresh).length) reply.apply(fresh);
+    },
+    [],
+  );
 
   // ─── Speech (panel-owned, via ctx.services) ───
   // The stream is created lazily on the first token, exactly like the host's
@@ -475,9 +482,9 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
     setErr(null);
     setStreaming("");
     setThinking("");
-    // Custom emotions/motions from the library plugin can come and go
-    // between turns; re-read the avatar's live capabilities.
-    refreshAvatarCapabilities(ctx);
+    // The reply owner (e.g. the avatar engine) re-registers its shape when
+    // its capabilities change; per-turn re-apply state starts clean.
+    appliedReplyRef.current = {};
     onStreamStart();
     let acc = "";
     let thought = "";
@@ -503,12 +510,7 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
           thinkingRafRef.current = requestAnimationFrame(flushThinking);
         }
       },
-      onEmotion: (e) => {
-        if (e) ctx.avatar.setEmotion(e);
-      },
-      onMotion: (m) => {
-        if (m && m !== "none") ctx.avatar.triggerMotion(m);
-      },
+      onData: applyReplyData,
       onUsage: (u) => {
         lastUsageRef.current = u;
         setUsage(u);

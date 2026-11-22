@@ -1,8 +1,8 @@
-// Port of the host's app/src/net/ws.ts (unchanged apart from the Emotion
-// type now coming from ./types).
+// Port of the host's app/src/net/ws.ts (unchanged apart from the reply
+// `data` record now coming from ./types instead of typed Emotion/Motion).
 
 import type { ChatMessage } from "./protocol";
-import type { Emotion, Motion, ProviderUsage } from "./types";
+import type { ProviderUsage } from "./types";
 import type { Provider, ProviderConfig, ProviderKind } from "./providers";
 import { createProvider } from "./providers";
 
@@ -10,8 +10,10 @@ export type ClientEvents = {
   onToken: (text: string) => void;
   /** Reasoning deltas from thinking models; display only, never spoken. */
   onThinking?: (t: string) => void;
-  onEmotion: (e: Emotion) => void;
-  onMotion: (m: Motion) => void;
+  /** Structured reply fields (e.g. emotion/motion from the avatar engine's
+   *  reply contribution). Fired mid-stream as inline tags resolve, then once
+   *  more with the final record — the consumer dedups per key. */
+  onData: (data: Record<string, unknown>) => void;
   onDone: (fullText: string) => void;
   onError: (e: Error) => void;
   /** Fired instead of onDone/onError when cancel() aborts the stream. */
@@ -73,9 +75,8 @@ export class RouterClient {
         memoryContext: memoryContext || undefined,
         onToken: (t) => h.onToken(t),
         onThinking: (t) => h.onThinking?.(t),
-        onEmotion: (e) => h.onEmotion(e),
-        onMotion: (m) => {
-          if (m && m !== "none") h.onMotion(m);
+        onData: (d) => {
+          if (d && Object.keys(d).length) h.onData(d);
         },
       });
     } catch (e) {
@@ -91,21 +92,20 @@ export class RouterClient {
 
     console.log("[llm] ── response ──");
     console.log("[llm] text:    " + JSON.stringify(result.text));
-    console.log("[llm] emotion: " + result.emotion);
-    console.log("[llm] motion:  " + result.motion);
+    const dataKeys = Object.keys(result.data ?? {});
+    if (dataKeys.length) console.log("[llm] data:    " + JSON.stringify(result.data));
     if (result.mcpCalls.length) console.log("[llm] mcp:     " + result.mcpCalls.join(", "));
     if (result.usage)
       console.log("[llm] usage:   " + result.usage.inputTokens + " in / " + result.usage.outputTokens + " out");
 
     if (result.usage) h.onUsage?.(result.usage);
-    h.onEmotion(result.emotion);
-    h.onMotion(result.motion);
+    if (result.data && Object.keys(result.data).length) h.onData(result.data);
     h.onMcpCalls?.(result.mcpCalls);
     h.onDone(result.text);
   }
 
   /** Plain completion (history compaction — net/compact.ts): no tools, no
-   *  avatar shaping, no streaming. One-shot; cancellation is via the signal
+   *  reply shaping, no streaming. One-shot; cancellation is via the signal
    *  the caller passes in. */
   async complete(messages: ChatMessage[], signal: AbortSignal): Promise<string> {
     console.log("[llm] ── complete ──");

@@ -631,6 +631,29 @@ const CHAT_CSS = `/* Confirm modal + buttons for the main window. It loads no ot
   color: #0a0c14;
 }
 
+/* While the model is generating, the send slot becomes the stop button and
+   carries the loading pulse — the text input keeps keyboard focus after
+   sending, and its focus halo must not read as the activity indicator. */
+.cp-inputrow.cp-busy .cp-input,
+.cp-inputrow.cp-busy .cp-input:focus {
+  border-color: rgba(255, 255, 255, 0.11);
+  box-shadow: none;
+}
+
+.cp-btn-stop-busy {
+  animation: cp-glow 1.6s ease-in-out infinite;
+}
+
+@keyframes cp-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgba(255, 125, 151, 0.18);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(255, 125, 151, 0.34);
+  }
+}
+
 .cp-btn-stop {
   background: rgba(255, 125, 151, 0.14);
   border-color: rgba(255, 125, 151, 0.35);

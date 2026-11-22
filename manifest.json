@@ -1,8 +1,8 @@
 {
   "id": "chat",
   "name": "Chat",
-  "version": "0.3.2",
-  "description": "The avatar's AI conversation: provider chat with tool loop, streaming TTS/STT speech, wake word, clarifying questions, and the Persona/Connection settings sections.",
+  "version": "0.4.0",
+  "description": "The AI conversation loop: provider chat with tool loop, streaming TTS/STT speech, wake word, clarifying questions, and the Persona/Connection settings sections. Avatar reply shaping (emotion/motion) is contributed by the avatar engine plugin.",
   "abi": 3,
   "permissions": [
     "storage",

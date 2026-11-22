@@ -25,13 +25,15 @@ import {
   lastUserText,
 } from "../loop";
 import {
-  buildStructuredSchema,
   buildMessages,
   msgText,
   emitDiff,
   emitFinalText,
-  finalAvatarResult,
-} from "../avatar";
+  finalReplyResult,
+  getReplyContribution,
+  replyToolName,
+  tagKinds,
+} from "../reply";
 import { doFetch, canStream, throwIfHttpError } from "../fetch";
 import { anthropicToolResultBlocks } from "../media-parts";
 import { readSse, extractPartialText } from "../sse";
@@ -63,12 +65,21 @@ export class AnthropicProvider implements Provider {
     if (!mcpArmed && probeTools.length)
       console.log("[mcp] idle for this message");
     const hint = mcpSystemHint(mcpTools);
+    // The reply shape (schema/carrier tool) comes from whichever plugin
+    // contributed a ReplyContribution — null = plain prose chat, no tool.
+    const reply = getReplyContribution();
+    const carrier = replyToolName(reply);
+    const kinds = tagKinds(reply);
     const anthropicTools: Record<string, unknown>[] = [
-      {
-        name: "avatar_response",
-        description: "Emit a structured avatar reply.",
-        input_schema: buildStructuredSchema(),
-      },
+      ...(reply
+        ? [
+            {
+              name: carrier,
+              description: "Emit a structured reply.",
+              input_schema: reply.schema,
+            },
+          ]
+        : []),
       ...toAnthropicTools(mcpTools),
     ];
     const built0 = buildMessages(messages, this.cfg.persona, memoryContext);
@@ -94,8 +105,8 @@ export class AnthropicProvider implements Provider {
         stream: true,
         tools: anthropicTools,
         tool_choice:
-          step === MCP_MAX_STEPS
-            ? { type: "tool", name: "avatar_response" }
+          step === MCP_MAX_STEPS && reply
+            ? { type: "tool", name: carrier }
             : { type: "auto" },
       };
 
@@ -111,6 +122,8 @@ export class AnthropicProvider implements Provider {
           body,
           headers,
           signal,
+          carrier,
+          kinds,
           (u) => { lastUsage = u; },
         );
         return { ...nr, usage: lastUsage };
@@ -144,7 +157,7 @@ export class AnthropicProvider implements Provider {
           const cb = chunk.content_block ?? {};
           const kind: Block["kind"] =
             cb.type === "tool_use"
-              ? cb.name === "avatar_response"
+              ? reply && cb.name === carrier
                 ? "avatar"
                 : "mcp"
               : cb.type === "thinking"
@@ -208,14 +221,14 @@ export class AnthropicProvider implements Provider {
           avatarJson = b.json;
         }
       }
-      // Stream any remaining avatar text (falls back to plain text
-      // when the model skips the avatar JSON shape so TTS still speaks).
-      emitFinalText(avatarJson, st, onToken);
-      const avatarText =
+      // Stream any remaining reply text (falls back to plain text
+      // when the model skips the reply JSON shape so TTS still speaks).
+      emitFinalText(avatarJson, st, onToken, kinds);
+      const replyText =
         extractPartialText(avatarJson) ||
         (() => {
           try {
-            return finalAvatarResult(avatarJson || "{}").text;
+            return finalReplyResult(avatarJson || "{}", kinds).text;
           } catch {
             return "";
           }
@@ -236,7 +249,7 @@ export class AnthropicProvider implements Provider {
             const output = await execMcpCall(fb.qualified, fb.args, signal);
             convo.push({
               role: "assistant",
-              content: avatarText || avatarJson,
+              content: replyText || avatarJson,
             });
             convo.push({
               role: "user",
@@ -250,7 +263,7 @@ export class AnthropicProvider implements Provider {
             );
             convo.push({
               role: "assistant",
-              content: avatarText || avatarJson,
+              content: replyText || avatarJson,
             });
             convo.push({
               role: "user",
@@ -260,8 +273,8 @@ export class AnthropicProvider implements Provider {
           }
         }
         console.log(`[mcp] step ${step + 1}: no tool call, replying direct`);
-        const parsed = finalAvatarResult(avatarJson || "{}");
-        const finalText = parsed.text || avatarText;
+        const parsed = finalReplyResult(avatarJson || "{}", kinds);
+        const finalText = parsed.text || replyText;
         if (
           finalText &&
           finalText.length > st.emitted.length &&
@@ -283,7 +296,7 @@ export class AnthropicProvider implements Provider {
         console.log(
           `[mcp] step ${step + 1}: only duplicate alarm calls, nudging to reply`,
         );
-        convo.push({ role: "assistant", content: avatarText || avatarJson });
+        convo.push({ role: "assistant", content: replyText || avatarJson });
         convo.push({
           role: "user",
           content: [
@@ -313,7 +326,7 @@ export class AnthropicProvider implements Provider {
           assistantContent.push({
             type: "tool_use",
             id: b.id,
-            name: "avatar_response",
+            name: carrier,
             input,
           });
         } else if (b.kind === "mcp" && freshIds.has(b.id)) {
@@ -353,13 +366,15 @@ export class AnthropicProvider implements Provider {
     body: Record<string, unknown>,
     headers: Record<string, string>,
     signal: AbortSignal,
+    carrier: string,
+    kinds: string[],
     onUsage?: (u: ProviderUsage) => void,
   ): Promise<ProviderResult> {
     const base = this.cfg.url.replace(/\/+$/, "").replace(/\/v1$/, "");
     const norm = {
       ...body,
       stream: false,
-      tool_choice: { type: "tool", name: "avatar_response" },
+      tool_choice: { type: "tool", name: carrier },
     };
     const res = await doFetch(`${base}/v1/messages`, {
       method: "POST",
@@ -379,17 +394,21 @@ export class AnthropicProvider implements Provider {
         outputTokens: Number(raw.usage.output_tokens) || 0,
       });
     }
-    const avatar = raw?.content?.find(
-      (b: any) => b.type === "tool_use" && b.name === "avatar_response",
+    const carrierCall = raw?.content?.find(
+      (b: any) => b.type === "tool_use" && b.name === carrier,
     );
-    const json = avatar?.input ?? "{}";
-    return finalAvatarResult(
-      typeof json === "string" ? json : JSON.stringify(json),
-    );
+    const json = carrierCall?.input ?? "{}";
+    return {
+      ...finalReplyResult(
+        typeof json === "string" ? json : JSON.stringify(json),
+        kinds,
+      ),
+      mcpCalls: [],
+    };
   }
 
   /** Plain completion for history compaction (net/compact.ts): no tools, no
-   *  avatar shaping — just the text. */
+   *  reply shaping — just the text. */
   async complete(messages: ChatMessage[], signal: AbortSignal): Promise<string> {
     const base = this.cfg.url.replace(/\/+$/, "").replace(/\/v1$/, "");
     const headers: Record<string, string> = {

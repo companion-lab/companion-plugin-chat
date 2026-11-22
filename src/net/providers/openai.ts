@@ -23,11 +23,14 @@ import {
   buildMessages,
   msgText,
   safeJsonParse,
-  openAiAvatarTool,
+  openAiReplyTool,
   emitDiff,
   emitFinalText,
-  finalAvatarResult,
-} from "../avatar";
+  finalReplyResult,
+  getReplyContribution,
+  replyToolName,
+  tagKinds,
+} from "../reply";
 import { doFetch, canStream } from "../fetch";
 import { openAIToolResultContent, convoHasMedia, stripConvoMedia } from "../media-parts";
 import {
@@ -49,9 +52,13 @@ export class OpenAIProvider implements Provider {
     memoryContext,
     onToken,
     onThinking,
-    onEmotion,
-    onMotion,
+    onData,
   }: ProviderRequest): Promise<ProviderResult> {
+    // The reply shape (schema/prompt/carrier tool) comes from whichever
+    // plugin contributed a ReplyContribution — null = plain prose chat.
+    const reply = getReplyContribution();
+    const carrier = replyToolName(reply);
+    const kinds = tagKinds(reply);
     const base = this.cfg.url.replace(/\/+$/, "").replace(/\/v1$/, "");
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -92,7 +99,7 @@ export class OpenAIProvider implements Provider {
     let streamDisabled = false;
     // Servers that reject a forced tool_choice (some OpenAI-compatible
     // runtimes) still work if we just ask for the JSON shape in prose.
-    let avatarToolDisabled = false;
+    let replyToolDisabled = false;
 
     for (let step = 0; step <= MCP_MAX_STEPS; step++) {
       const lastStep = step === MCP_MAX_STEPS;
@@ -101,14 +108,14 @@ export class OpenAIProvider implements Provider {
         model: this.cfg.model,
         messages: convo,
         stream: wantStream,
-        // Final step: force the avatar reply shape so TTS/motion parse.
-        // Earlier steps keep tools available for multi-step tasks.
-        ...(lastStep && !avatarToolDisabled
+        // Final step: force the reply shape so TTS/apply parse. Earlier
+        // steps keep tools available for multi-step tasks.
+        ...(lastStep && reply && !replyToolDisabled
           ? {
-              tools: [openAiAvatarTool()],
+              tools: [openAiReplyTool(reply)],
               tool_choice: {
                 type: "function",
-                function: { name: "avatar_response" },
+                function: { name: carrier },
               },
             }
           : openAITools.length && !lastStep
@@ -140,13 +147,14 @@ export class OpenAIProvider implements Provider {
         }
         if (
           lastStep &&
-          !avatarToolDisabled &&
+          reply &&
+          !replyToolDisabled &&
           (res.status === 400 || res.status === 422)
         ) {
           console.warn(
-            `[llm] forced avatar_response rejected (HTTP ${res.status}), retrying without tool_choice`,
+            `[llm] forced ${carrier} rejected (HTTP ${res.status}), retrying without tool_choice`,
           );
-          avatarToolDisabled = true;
+          replyToolDisabled = true;
           step--;
           continue;
         }
@@ -171,14 +179,14 @@ export class OpenAIProvider implements Provider {
       let content = "";
       let calls: McpNativeCall[] = [];
       // Survives past the streaming branch: the final reconcile needs whatever
-      // motion/emotion already fired mid-stream.
-      const tags = new StructuredStream();
+      // reply fields already fired mid-stream.
+      const tags = new StructuredStream(kinds);
 
       if (wantStream && canStream(res)) {
         const acc = openAiDeltaState();
         let seen = 0;
         let seenReasoning = 0;
-        // Models that skip the avatar JSON shape reply in plain prose, where
+        // Models that skip the reply JSON shape reply in plain prose, where
         // extractPartialText never matches. Decide once on the first delta
         // and stream the raw text instead.
         let prose: boolean | null = null;
@@ -195,11 +203,10 @@ export class OpenAIProvider implements Provider {
           seen = acc.content.length;
           if (prose === null) prose = !acc.content.trimStart().startsWith("{");
           if (prose) {
-            // Inline <<motion:x>> / <<emotion:x>> replies: fire the avatar as
-            // soon as the tag resolves and keep the tags out of the speech.
+            // Inline <<kind:value>> replies: fire the reply owner as soon as
+            // a tag resolves and keep the tags out of the speech.
             const r = tags.push(delta);
-            if (r.emotion) onEmotion?.(r.emotion);
-            if (r.motion && r.motion !== "none") onMotion?.(r.motion);
+            if (Object.keys(r.data).length) onData?.(r.data);
             // tags.push already returns only the new tail, so emit it as-is.
             // Feeding it to emitDiff would re-diff against st.emitted and
             // silently drop every delta after the first. Append instead to
@@ -230,25 +237,25 @@ export class OpenAIProvider implements Provider {
         }
         // Stream the tail too (plain-text replies never matched while
         // streaming, so nothing was emitted yet).
-        emitFinalText(content, st, onToken);
-        // avatar_response is our own final-turn carrier, never an MCP tool.
+        emitFinalText(content, st, onToken, kinds);
+        // The carrier tool is our own final-turn reply shape, never an MCP tool.
         calls = openAiToolCalls(acc)
-          .filter((c) => !(lastStep && c.name === "avatar_response"))
+          .filter((c) => !(lastStep && c.name === carrier))
           .map((c, i) => ({
             id: c.id || `${step}-${i}`,
             qualified: c.name,
             args: safeJsonParse(c.args || "{}"),
           }));
-        // Forced tool call carries text/emotion/motion in its arguments, and
+        // Forced tool call carries the reply fields in its arguments, and
         // leaves content empty — promote it so the parser and TTS see it.
         if (lastStep && !content.trim()) {
-          const avatar = openAiToolCalls(acc).find(
-            (c) => c.name === "avatar_response",
+          const carrierCall = openAiToolCalls(acc).find(
+            (c) => c.name === carrier,
           );
-          if (avatar) {
-            content = avatar.args;
+          if (carrierCall) {
+            content = carrierCall.args;
             st.emitted = "";
-            emitFinalText(content, st, onToken);
+            emitFinalText(content, st, onToken, kinds);
           }
         }
       } else {
@@ -273,11 +280,11 @@ export class OpenAIProvider implements Provider {
             ? msg.content
             : JSON.stringify(msg?.content ?? {});
         if (lastStep && !content.trim() && Array.isArray(msg?.tool_calls)) {
-          const avatar = msg.tool_calls.find(
-            (tc: any) => tc?.function?.name === "avatar_response",
+          const carrierCall = msg.tool_calls.find(
+            (tc: any) => tc?.function?.name === carrier,
           );
-          if (avatar) {
-            content = String(avatar?.function?.arguments ?? "");
+          if (carrierCall) {
+            content = String(carrierCall?.function?.arguments ?? "");
             st.emitted = "";
           }
         }
@@ -285,10 +292,9 @@ export class OpenAIProvider implements Provider {
         // delta callback to fire them from.
         if (!content.trimStart().startsWith("{")) {
           const r = tags.push(content);
-          if (r.emotion) onEmotion?.(r.emotion);
-          if (r.motion && r.motion !== "none") onMotion?.(r.motion);
+          if (Object.keys(r.data).length) onData?.(r.data);
         }
-        emitFinalText(content, st, onToken);
+        emitFinalText(content, st, onToken, kinds);
         calls =
           !lastStep && Array.isArray(msg?.tool_calls)
             ? msg.tool_calls
@@ -343,10 +349,10 @@ export class OpenAIProvider implements Provider {
           }
         }
         console.log(`[mcp] step ${step + 1}: no tool call, replying direct`);
-        // Final avatar turn: text already streamed above for TTS/lipsync.
-        // Content may be the avatar JSON shape or an inline-tag prose reply.
+        // Final reply turn: text already streamed above for TTS/lipsync.
+        // Content may be the reply JSON shape or an inline-tag prose reply.
         return {
-          ...finalAvatarResult(content, tags),
+          ...finalReplyResult(content, kinds, tags),
           mcpCalls: callsSoFar.map((c) => c.qualified),
           usage: lastUsage,
         };
@@ -391,7 +397,7 @@ export class OpenAIProvider implements Provider {
   }
 
   /** Plain completion for history compaction (net/compact.ts): no tools, no
-   *  streaming, no avatar shaping — just the text. */
+   *  reply shaping — just the text. */
   async complete(messages: ChatMessage[], signal: AbortSignal): Promise<string> {
     const base = this.cfg.url.replace(/\/+$/, "").replace(/\/v1$/, "");
     const headers: Record<string, string> = {

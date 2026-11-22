@@ -1,68 +1,53 @@
-// Port of the host's app/src/net/structured.ts. The only change: emotion and
-// motion names resolve against the avatar capabilities snapshot
-// (./capabilities.ts, refreshed from ctx.avatar.describeCapabilities())
-// instead of the host's expression/motion registries.
+// Generic inline-tag extraction for structured replies. Tag kinds come from
+// the active reply contribution's schema (every non-"text" property — see
+// ./reply.ts tagKinds); values pass through unresolved, since the reply
+// owner (e.g. the avatar engine) is the one that interprets them.
+//
+// Ported from the host's app/src/net/structured.ts, which hardcoded the
+// avatar's emotion/motion tags.
 
-import type { Emotion } from "./types";
-import {
-  resolveEmotionName,
-  resolveMotionName,
-} from "./capabilities";
-
-export type Motion = string;
-
-export type ResponsePayload = {
+export type TagParse = {
   text: string;
-  emotion: Emotion | null;
-  motion: Motion;
+  data: Record<string, unknown>;
 };
 
-const EMOTION_TAG = /<<emotion:([^>]+)>>/gi;
-const MOTION_TAG = /<<motion:([^>]+)>>/gi;
-
-// The tag pattern captures [^>]+, so a match always yields a non-empty name;
-// the ?? "" keeps the signature total without an unreachable branch.
-function toEmotion(s: string | undefined): Emotion | null {
-  return (resolveEmotionName((s ?? "").trim()) as Emotion) ?? null;
+function tagRegex(kind: string): RegExp {
+  // Kind names are schema property keys, so this is a plain identifier —
+  // no escaping needed inside the pattern.
+  return new RegExp(`<<(${kind}):([^>]+)>>`, "gi");
 }
 
-function toMotion(s: string | undefined): Motion {
-  return (resolveMotionName((s ?? "").trim()) as Motion) ?? "none";
-}
-
-export function stripStructuredTags(raw: string): string {
-  return raw.replace(EMOTION_TAG, "").replace(MOTION_TAG, "");
+export function stripStructuredTags(raw: string, kinds: string[]): string {
+  let out = raw;
+  for (const kind of kinds) out = out.replace(tagRegex(kind), "");
+  return out;
 }
 
 // State machine for streaming tag extraction.
 export class StructuredStream {
   private raw = "";
   private emittedText = "";
-  private firedEmotion: Emotion | null = null;
-  private firedMotion: Motion = "none";
+  // Only kinds a tag actually resolved for — getFinal() must not invent
+  // defaults that would clobber the JSON parse in finalReplyResult.
+  private fired: Record<string, string> = {};
 
-  push(raw: string): { tokens: string; emotion: Emotion | null; motion: Motion } {
+  constructor(private kinds: string[]) {}
+
+  push(raw: string): { tokens: string; data: Record<string, unknown> } {
     this.raw += raw;
 
-    let emotion: Emotion | null = null;
-    let motion: Motion = "none";
-
-    for (const m of this.raw.matchAll(EMOTION_TAG)) {
-      const e = toEmotion(m[1]);
-      if (e && e !== this.firedEmotion) {
-        this.firedEmotion = e;
-        emotion = e;
-      }
-    }
-    for (const m of this.raw.matchAll(MOTION_TAG)) {
-      const mv = toMotion(m[1]);
-      if (mv !== "none" && mv !== this.firedMotion) {
-        this.firedMotion = mv;
-        motion = mv;
+    const data: Record<string, unknown> = {};
+    for (const kind of this.kinds) {
+      for (const m of this.raw.matchAll(tagRegex(kind))) {
+        const v = (m[2] ?? "").trim();
+        if (v && v !== this.fired[kind]) {
+          this.fired[kind] = v;
+          data[kind] = v;
+        }
       }
     }
 
-    const clean = stripStructuredTags(this.raw);
+    const clean = stripStructuredTags(this.raw, this.kinds);
     // Hold back a trailing partial tag (a "<<" split across two chunks) so we
     // never speak half of one.
     const partial = clean.search(/<<?[^>]*$/);
@@ -74,27 +59,23 @@ export class StructuredStream {
       this.emittedText = speakable;
     }
 
-    return { tokens, emotion, motion };
+    return { tokens, data };
   }
 
-  getFinal(): { emotion: Emotion | null; motion: Motion } {
-    return { emotion: this.firedEmotion, motion: this.firedMotion };
+  getFinal(): Record<string, unknown> {
+    return { ...this.fired };
   }
 }
 
-export function parseStructured(raw: string): ResponsePayload {
-  let emotion: Emotion | null = null;
-  let motion: Motion = "none";
-
-  for (const m of raw.matchAll(EMOTION_TAG)) {
-    const e = toEmotion(m[1]);
-    if (e) emotion = e;
+export function parseStructured(raw: string, kinds: string[]): TagParse {
+  const data: Record<string, unknown> = {};
+  for (const kind of kinds) {
+    for (const m of raw.matchAll(tagRegex(kind))) {
+      const v = (m[2] ?? "").trim();
+      if (v) data[kind] = v;
+    }
   }
-  for (const m of raw.matchAll(MOTION_TAG)) {
-    const mv = toMotion(m[1]);
-    if (mv !== "none") motion = mv;
-  }
-  const text = stripStructuredTags(raw).trim();
+  const text = stripStructuredTags(raw, kinds).trim();
 
-  return { text, emotion, motion };
+  return { text, data };
 }

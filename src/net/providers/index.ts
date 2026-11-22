@@ -26,11 +26,11 @@ export {
 } from "../loop";
 
 export {
-  SYSTEM_PROMPT,
-  buildAvatarDirectives,
-  finalAvatarResult,
+  getReplyContribution,
+  finalReplyResult,
   emitDiff,
-} from "../avatar";
+  buildSystemPrompt,
+} from "../reply";
 
 export function createProvider(
   kind: ProviderKind,

@@ -15,8 +15,10 @@
 // - The main-window chat panel via ctx.main.overrideWidget("chatPanel", …):
 //   the host App renders that target with extra props (onEmotion/onMotion,
 //   ttsSpeaking, …) both now and after the slimming step — the panel ignores
-//   all of them and reads api/persona from the plugin store, speaks through
-//   ctx.services, and drives the avatar through ctx.avatar.
+//   all of them and reads api/persona from the plugin store and speaks
+//   through ctx.services. The avatar itself is not driven from here: the
+//   avatar engine plugin contributes the reply shape (ctx.reply.register)
+//   and receives parsed reply fields through its `apply` (see net/reply.ts).
 //
 // All chat logic is frontend-only (providers are HTTP via the vendored
 // fetch); there is no Rust backend.
@@ -25,7 +27,6 @@ import { definePlugin, type PluginContext } from "@companion-lab/plugin";
 import { initChatSettings } from "./settings";
 import { initChatHistory } from "./chat-history";
 import { initChatBoxMenu } from "./chat-box-menu";
-import { setAvatarCapabilities } from "./net/capabilities";
 import { ApiSettingsSection } from "./ApiSettingsSection";
 import { PersonaSettingsSection } from "./PersonaSettingsSection";
 import { ChatPanel } from "./ChatPanel";
@@ -44,15 +45,6 @@ export default definePlugin((ctx: PluginContext) => {
   // Chat box show/hide as a context-menu item on the avatar window (the old
   // General-tab section is gone — right-click the companion to toggle).
   initChatBoxMenu(ctx);
-
-  // Seed the avatar capabilities snapshot from the live bus (defaults apply
-  // until the main window's model is up; the panel refreshes per turn).
-  try {
-    const caps = ctx.avatar.describeCapabilities();
-    if (caps.emotions.length || caps.motions.length) setAvatarCapabilities(caps);
-  } catch {
-    /* defaults stay (see net/capabilities.ts) */
-  }
 
   // Settings: the Connection TAB is registered here (the AI backend is its
   // primary card); the stt/tts cloud endpoint sections render on it keyed

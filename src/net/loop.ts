@@ -90,7 +90,7 @@ export function toolResultMessage(
   const pinned = goal
     ? `Original user goal (still pending until ALL steps done): ${goal}\n`
     : "";
-  return `${pinned}[tool ${qualified} result]\n${output}\nDecide the NEXT tool call now, or reply with the final text/emotion/motion only if every requested action is complete.`;
+  return `${pinned}[tool ${qualified} result]\n${output}\nDecide the NEXT tool call now, or reply with the final text only if every requested action is complete.`;
 }
 
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;

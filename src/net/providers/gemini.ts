@@ -24,12 +24,14 @@ import {
   toolResultMessage,
 } from "../loop";
 import {
-  buildGeminiSchema,
   buildMessages,
   msgText,
   emitFinalText,
-  finalAvatarResult,
-} from "../avatar";
+  finalReplyResult,
+  getReplyContribution,
+  toGeminiSchema,
+  tagKinds,
+} from "../reply";
 import { doFetch, canStream, throwIfHttpError } from "../fetch";
 import { geminiToolResultParts } from "../media-parts";
 import { readSse } from "../sse";
@@ -58,6 +60,10 @@ export class GeminiProvider implements Provider {
       console.log("[mcp] idle for this message");
     const hint = mcpSystemHint(mcpTools);
     const declarations = toGeminiDeclarations(mcpTools);
+    // The reply shape (schema) comes from whichever plugin contributed a
+    // ReplyContribution — null = plain prose chat, no response schema.
+    const reply = getReplyContribution();
+    const kinds = tagKinds(reply);
     const builtBase = buildMessages(messages, this.cfg.persona, memoryContext);
     const sysBase = msgText(builtBase[0]);
     // Gemini contents (model/user only); tool I/O replays as text parts.
@@ -89,10 +95,16 @@ export class GeminiProvider implements Provider {
         ...(declarations.length
           ? { tools: [{ functionDeclarations: declarations }] }
           : {}),
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: buildGeminiSchema(),
-        },
+        // Structured output on every step so the reply always parses (only
+        // with a reply contribution; plain chat keeps free-form text).
+        ...(reply
+          ? {
+              generationConfig: {
+                responseMimeType: "application/json",
+                responseSchema: toGeminiSchema(reply.schema),
+              },
+            }
+          : {}),
       };
 
       const streamUrl = `${base}/v1beta/models/${encodeURIComponent(this.cfg.model)}:streamGenerateContent?alt=sse&key=${key}`;
@@ -104,12 +116,12 @@ export class GeminiProvider implements Provider {
       });
       await throwIfHttpError(res);
       if (!canStream(res)) {
-        const nr = await this.chatNonStream(body, signal, (u) => { lastUsage = u; });
+        const nr = await this.chatNonStream(body, signal, kinds, (u) => { lastUsage = u; });
         return { ...nr, usage: lastUsage };
       }
       let accText = "";
       // Thought summaries stream as their own parts; keep them out of the
-      // reply text (they must not reach TTS or the final avatar parse).
+      // reply text (they must not reach TTS or the final reply parse).
       let accThought = "";
       let seenThought = 0;
       const mcpCalls: McpNativeCall[] = [];
@@ -142,7 +154,7 @@ export class GeminiProvider implements Provider {
               }
             } else {
               accText += p.text;
-              emitFinalText(accText, st, onToken);
+              emitFinalText(accText, st, onToken, kinds);
             }
           }
           const fc = p?.functionCall;
@@ -158,7 +170,7 @@ export class GeminiProvider implements Provider {
           }
         }
       });
-      emitFinalText(accText, st, onToken);
+      emitFinalText(accText, st, onToken, kinds);
       if (stepIn || stepOut) {
         lastUsage = {
           inputTokens: stepIn || lastUsage?.inputTokens || 0,
@@ -214,7 +226,7 @@ export class GeminiProvider implements Provider {
           }
         }
         console.log(`[mcp] step ${step + 1}: no tool call, replying direct`);
-        const parsed = finalAvatarResult(accText);
+        const parsed = finalReplyResult(accText, kinds);
         const finalText = parsed.text || st.emitted;
         if (
           finalText &&
@@ -273,6 +285,7 @@ export class GeminiProvider implements Provider {
   private async chatNonStream(
     body: Record<string, unknown>,
     signal: AbortSignal,
+    kinds: string[],
     onUsage?: (u: ProviderUsage) => void,
   ): Promise<ProviderResult> {
     const base = this.cfg.url.replace(/\/+$/, "").replace(/\/v1(beta)?$/, "");
@@ -293,7 +306,7 @@ export class GeminiProvider implements Provider {
       });
     }
     const text = raw?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
-    return finalAvatarResult(text);
+    return { ...finalReplyResult(text, kinds), mcpCalls: [] };
   }
 
   /** Plain completion for history compaction (net/compact.ts): no tools, no

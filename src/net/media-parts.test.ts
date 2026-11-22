@@ -61,7 +61,7 @@ describe("parseToolMedia", () => {
 
 describe("openAIToolResultContent", () => {
   const TAIL =
-    "\nDecide the NEXT tool call now, or reply with the final text/emotion/motion only if every requested action is complete.";
+    "\nDecide the NEXT tool call now, or reply with the final text only if every requested action is complete.";
 
   it("returns a plain string for non-media output", () => {
     expect(openAIToolResultContent("mcp__vision__snapshot", "out", "")).toBe(
@@ -102,7 +102,7 @@ describe("anthropicToolResultBlocks", () => {
     expect(anthropicToolResultBlocks("vision__capture_screen", out, "")).toEqual([
       {
         type: "text",
-        text: "[tool vision__capture_screen result]\nsaw a cat\nDecide the NEXT tool call now, or reply with the final text/emotion/motion only if every requested action is complete.",
+        text: "[tool vision__capture_screen result]\nsaw a cat\nDecide the NEXT tool call now, or reply with the final text only if every requested action is complete.",
       },
       {
         type: "image",
@@ -116,7 +116,7 @@ describe("anthropicToolResultBlocks", () => {
     expect(anthropicToolResultBlocks("t", "out", "")).toEqual([
       {
         type: "text",
-        text: "[tool t result]\nout\nDecide the NEXT tool call now, or reply with the final text/emotion/motion only if every requested action is complete.",
+        text: "[tool t result]\nout\nDecide the NEXT tool call now, or reply with the final text only if every requested action is complete.",
       },
     ]);
   });
@@ -131,7 +131,7 @@ describe("geminiToolResultParts", () => {
     });
     expect(geminiToolResultParts("vision__capture_screen", out, "")).toEqual([
       {
-        text: "[tool vision__capture_screen result]\nsaw a cat\nDecide the NEXT tool call now, or reply with the final text/emotion/motion only if every requested action is complete.",
+        text: "[tool vision__capture_screen result]\nsaw a cat\nDecide the NEXT tool call now, or reply with the final text only if every requested action is complete.",
       },
       { inline_data: { mime_type: "image/png", data: "IMG" } },
       { text: AUDIO_NOTE },

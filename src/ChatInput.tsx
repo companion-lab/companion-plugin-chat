@@ -45,7 +45,7 @@ export function ChatInput({ value, onChange, onSend, onToggleMic, micActive, mic
   );
 
   return (
-    <div className="cp-inputrow">
+    <div className={`cp-inputrow${sending ? " cp-busy" : ""}`}>
       <input
         className="cp-input"
         value={value}
@@ -54,11 +54,7 @@ export function ChatInput({ value, onChange, onSend, onToggleMic, micActive, mic
         placeholder="Say something…"
         aria-label="Message"
       />
-      {sending ? (
-        <button className="cp-btn cp-btn-stop" onClick={onStop} aria-label="Stop response" title="Stop">
-          <StopIcon />
-        </button>
-      ) : micAvailable ? (
+      {micAvailable ? (
         <button
           className={`cp-btn${micActive ? " cp-btn-mic-on" : ""}`}
           onClick={onToggleMic}
@@ -69,9 +65,26 @@ export function ChatInput({ value, onChange, onSend, onToggleMic, micActive, mic
           <MicIcon />
         </button>
       ) : null}
-      <button className="cp-btn cp-btn-send" onClick={onSend} disabled={!value.trim()} aria-label="Send" title="Send">
-        <SendIcon />
-      </button>
+      {sending ? (
+        <button
+          className="cp-btn cp-btn-stop cp-btn-stop-busy"
+          onClick={onStop}
+          aria-label="Stop response"
+          title="Stop"
+        >
+          <StopIcon />
+        </button>
+      ) : (
+        <button
+          className="cp-btn cp-btn-send"
+          onClick={onSend}
+          disabled={!value.trim()}
+          aria-label="Send"
+          title="Send"
+        >
+          <SendIcon />
+        </button>
+      )}
     </div>
   );
 }
