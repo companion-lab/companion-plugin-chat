@@ -5,7 +5,11 @@
 // The pref stays in the host's localStorage "companion:ui" blob and the save
 // emits the host-global "ui-prefs-changed" event exactly like the old
 // section did: the transition-period App.tsx hides/shows its chatPanel
-// wrapper from that event. The blob is read-merged (never overwritten) so
+// wrapper from that event. The host's ctx.main.setUiPrefs (when present)
+// persists + applies to THIS context synchronously and only emits for the
+// other windows/tabs — the event echo alone made the toggle lag one round
+// trip behind the click on the web bridge. The blob is read-merged (never
+// overwritten) so
 // the other owners' keys survive (micShortcut + bargeIn — host/stt plugin),
 // and the payload carries the full blob because App.tsx re-applies the
 // shortcut from every event.
@@ -49,15 +53,24 @@ function loadUiPrefs(): Required<UiPrefsShape> {
   }
 }
 
-function apply(patch: Partial<UiPrefsShape>): Required<UiPrefsShape> {
+function apply(ctx: PluginContext, patch: Partial<UiPrefsShape>): Required<UiPrefsShape> {
   // Read-merge-write: the blob is shared with the host and other plugins.
   const next = { ...loadUiPrefs(), ...patch };
-  try {
-    localStorage.setItem(UI_PREFS_KEY, JSON.stringify(next));
-  } catch {
-    /* ignore */
+  // Fast path: the host persists + applies to THIS context synchronously and
+  // broadcasts for the other windows/tabs — no event-echo wait, which on the
+  // web bridge is a WebSocket round trip (the toggle visibly lagged there).
+  // Older hosts fall back to the event-echo path (write + emit).
+  const host = ctx.main as typeof ctx.main & { setUiPrefs?: (p: UiPrefsShape) => void };
+  if (typeof host.setUiPrefs === "function") {
+    host.setUiPrefs(next);
+  } else {
+    try {
+      localStorage.setItem(UI_PREFS_KEY, JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+    void tauriEmit(UI_PREFS_EVENT, next).catch(() => {});
   }
-  void tauriEmit(UI_PREFS_EVENT, next).catch(() => {});
   return next;
 }
 
@@ -74,7 +87,7 @@ export function initChatBoxMenu(ctx: PluginContext): void {
       </svg>
     ),
     onSelect: () => {
-      item.label = labelFor(apply({ hideChat: !loadUiPrefs().hideChat }).hideChat);
+      item.label = labelFor(apply(ctx, { hideChat: !loadUiPrefs().hideChat }).hideChat);
     },
   };
   ctx.main.registerContextMenuItem(item);
