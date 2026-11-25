@@ -224,6 +224,70 @@ export function dropDuplicateAlarms<
   });
 }
 
+// --- calendar fallback helpers ---------------------------------------------
+
+// A date phrase the calendar backend's parse_date accepts: ISO, today /
+// tonight / tomorrow, a weekday name, or a month-day ("Dec 25" / "25 Dec").
+// Returns the raw match so the title strip can exclude its exact span.
+function calendarDateMatch(text: string): RegExpExecArray | null {
+  return (
+    /(\d{4}-\d{2}-\d{2})\b/.exec(text) ??
+    /\b(today|tonight|tomorrow)\b/i.exec(text) ??
+    /\b(?:next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b/i.exec(
+      text,
+    ) ??
+    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b/i.exec(
+      text,
+    ) ??
+    /\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i.exec(
+      text,
+    ) ??
+    null
+  );
+}
+
+// Canonical date argument for the backend: relative words pass through
+// ("tonight" → "today", the backend knows "today"/"tomorrow"), weekday
+// names lowercase (parse_date keys on the 3-letter prefix), month-day
+// rebuilds as "dec 25" / "25 dec" (ordinals dropped; the backend's token
+// parse rejects "25th").
+function calendarDateArg(m: RegExpExecArray): string {
+  const rel = /\b(today|tonight|tomorrow)\b/i.exec(m[0]);
+  if (rel) return rel[1].toLowerCase() === "tonight" ? "today" : rel[1].toLowerCase();
+  const day = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b/i.exec(
+    m[0],
+  );
+  if (day) return day[1].toLowerCase();
+  if (/^\d{4}-/.test(m[0])) return m[0];
+  return `${m[1]} ${m[2]}`.trim();
+}
+
+// Title = the request minus the date phrase, minus the command/connector
+// scaffolding ("set new event for", "i have"). Empty → the backend
+// defaults to "Event".
+function calendarTitle(text: string, m: RegExpExecArray): string {
+  const noDate = `${text.slice(0, m.index)} ${text.slice(m.index + m[0].length)}`;
+  const stripped = noDate
+    .replace(
+      /^\s*(?:hey\s+\w+\s*[,.]?\s*|please\s+|can you\s+|could you\s+|i\s+(?:want to|need to|have to|have)\s+|i'?ve got\s+|we have\s+)*/i,
+      "",
+    )
+    .replace(
+      /^\s*(?:set|add|create|schedule|book|plan|make|put|remind|wake)\s+(?:up\s+|about\s+|me\s+)?(?:a\s+|an\s+|the\s+|my\s+)?(?:new\s+)?(?:calendar\s+)?(?:event|meeting|appointment|reminder|birthday|anniversary|party|call|brunch|lunch|dinner)?\s*(?:for|on|at|about)?\s*/i,
+      "",
+    )
+    .replace(/^[\s,.;:!-]+/, "")
+    .replace(
+      /^(?:i\s+have|i'?ve got|we have|there is|there's|about|with|for|on|a|an|the)\s+/i,
+      "",
+    )
+    .replace(/^[\s,.;:!-]+/, "")
+    .trim();
+  if (stripped.length < 3) return "";
+  const title = stripped.slice(0, 80);
+  return title.charAt(0).toUpperCase() + title.slice(1);
+}
+
 // Fallback for models that acknowledge tools but answer in text anyway
 // (common with small local models). Runs on EVERY step, not just step 0,
 // and skips actions already attempted so the loop keeps moving forward.
@@ -242,8 +306,17 @@ export function keywordFallback(
 
   // Alarm requests must never touch the browser: handle them before any
   // Playwright branch so a text-only answer still creates the alarm.
+  // Dated requests ("remind me on Dec 25") belong to the calendar instead —
+  // parseClock would read the 25 as 23:00 and silently misroute them.
   const alarmCreate = tools.find((t) => toolName(t.qualified) === "alarm_create");
-  if (alarmCreate && ALARM_INTENT_RE.test(text)) {
+  const calendarCreate = tools.find(
+    (t) => toolName(t.qualified) === "calendar_create",
+  );
+  const datedCalendarIntent =
+    calendarCreate !== undefined &&
+    CALENDAR_INTENT_RE.test(text) &&
+    calendarDateMatch(text) !== null;
+  if (alarmCreate && ALARM_INTENT_RE.test(text) && !datedCalendarIntent) {
     // message is required upstream; fall back to the request text so the
     // avatar always has something to say.
     const message = text.trim().slice(0, 200) || "Alarm";
@@ -275,6 +348,62 @@ export function keywordFallback(
       if (/\bloop\b|keep ringing|until i stop/i.test(text))
         args.loop_sound = true;
       return { qualified: alarmCreate.qualified, args };
+    }
+  }
+
+  // Calendar requests answered in prose still get their call: same
+  // last-resort role the alarm branch plays. Without this, a small model
+  // that "confirms in text" nudges forever — taskLooksComplete keeps
+  // demanding a calendar call no fallback ever provides. Runs only until a
+  // calendar tool has run, so a post-create text turn can't re-fire.
+  if (
+    calendarCreate &&
+    !callsSoFar.some((c) => toolName(c.qualified).startsWith("calendar"))
+  ) {
+    // Questions read the calendar; statements and commands write it. The
+    // question check comes first so "do i have any meeting tomorrow" can't
+    // hit the noun+date create path below.
+    const questionish = /\b(what|when|which|any|show|list|check|do i have|am i free|is there)\b/i.test(
+      text,
+    );
+    const wantsCreate = /\b(set|add|create|schedule|book|plan|make|put|remind|wake)\b/i.test(
+      text,
+    );
+    const dateM = calendarDateMatch(text);
+    const calendarNoun = CALENDAR_INTENT_RE.test(text);
+    // A bare statement ("dentist appointment next friday at 3pm") has no
+    // action verb but still means create when it names a date.
+    const createIntent = wantsCreate || (!questionish && calendarNoun);
+    if (createIntent && dateM) {
+      const args: Record<string, unknown> = {
+        date: calendarDateArg(dateM),
+        title: calendarTitle(text, dateM),
+        // message is required upstream; the request text is what the
+        // avatar should say when it fires.
+        message: text.trim().slice(0, 200) || "Calendar event",
+      };
+      if (/\b(birthday|anniversary|every year|yearly|annually)\b/i.test(text))
+        args.repeat_yearly = true;
+      else if (/\bevery day\b|\bdaily\b/i.test(text)) args.repeat = "daily";
+      else if (/\bevery week\b|\bweekly\b/i.test(text)) args.repeat = "weekly";
+      else if (/\bevery month\b|\bmonthly\b/i.test(text)) args.repeat = "monthly";
+      const clock = parseClock(text);
+      if (clock) {
+        args.hour = clock.hour;
+        args.minute = clock.minute;
+      } else {
+        // No time given: an all-day event is the honest default (fires
+        // 9am) and needs no invented hour.
+        args.all_day = true;
+      }
+      return { qualified: calendarCreate.qualified, args };
+    }
+    // Questions about dated happenings read the calendar instead of
+    // creating anything — "what's on Friday?" has no calendar noun, so the
+    // guard is a question word plus any date phrase or calendar noun.
+    const listTool = tools.find((t) => toolName(t.qualified) === "calendar_list");
+    if (listTool && questionish && (calendarNoun || dateM)) {
+      return { qualified: listTool.qualified, args: {} };
     }
   }
 

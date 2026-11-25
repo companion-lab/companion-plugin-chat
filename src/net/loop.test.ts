@@ -140,6 +140,128 @@ describe("weekday-word parsing (via the alarm keyword fallback)", () => {
   });
 });
 
+describe("calendar keyword fallback", () => {
+  const create: McpWireTool = {
+    server_id: "calendar",
+    name: "calendar_create",
+    qualified: "calendar__calendar_create",
+    description: "create a calendar event",
+    schema: {},
+  };
+  const list: McpWireTool = {
+    server_id: "calendar",
+    name: "calendar_list",
+    qualified: "calendar__calendar_list",
+    description: "list calendar events",
+    schema: {},
+  };
+
+  function call(text: string, extra: McpWireTool[] = [], callsSoFar: Array<{ qualified: string; args: unknown }> = []) {
+    return keywordFallback(text, [create, list, ...extra], callsSoFar);
+  }
+
+  it("rescues the canonical small-model text-only answer", () => {
+    // "set new event for tomorrow, i have meeting with justin about RFID
+    // integration" — no time given → all-day, title from the request body.
+    expect(
+      call("set new event for tomorrow, i have meeting with justin about RFID integration"),
+    ).toEqual({
+      qualified: "calendar__calendar_create",
+      args: {
+        date: "tomorrow",
+        title: "Meeting with justin about RFID integration",
+        all_day: true,
+        message: "set new event for tomorrow, i have meeting with justin about RFID integration",
+      },
+    });
+  });
+
+  it("passes a parsed clock through as hour/minute", () => {
+    expect(call("dentist appointment next friday at 3pm")).toMatchObject({
+      qualified: "calendar__calendar_create",
+      args: {
+        date: "friday",
+        hour: 15,
+        minute: 0,
+      },
+    });
+  });
+
+  it("marks birthdays yearly", () => {
+    expect(call("add birthday party on dec 25")).toMatchObject({
+      qualified: "calendar__calendar_create",
+      args: { date: "dec 25", repeat_yearly: true },
+    });
+  });
+
+  it("handles tomorrow/today/tonight and month-day forms", () => {
+    expect(call("schedule lunch with kim today")).toMatchObject({
+      args: { date: "today", all_day: true },
+    });
+    expect(call("put a reminder tomorrow 7:30am about the standup")).toMatchObject({
+      args: { date: "tomorrow", hour: 7, minute: 30 },
+    });
+  });
+
+  it("does not create twice: skips after any calendar call", () => {
+    const seen = [{ qualified: "calendar__calendar_create", args: {} }];
+    expect(
+      call("set new event for tomorrow, i have meeting with justin", [], seen),
+    ).toBeNull();
+  });
+
+  it("routes questions to calendar_list, not create", () => {
+    expect(call("what's on friday?")).toEqual({
+      qualified: "calendar__calendar_list",
+      args: {},
+    });
+    expect(call("do i have any meeting tomorrow?")).toMatchObject({
+      qualified: "calendar__calendar_list",
+    });
+  });
+
+  it("stays out of ordinary chat and other intents", () => {
+    expect(call("what do you think about the weather?")).toBeNull();
+    expect(call("hello! how are you feeling today?")).toBeNull();
+    // No calendar intent noun and no question+date: no fallback for prose.
+    expect(call("i love this song")).toBeNull();
+  });
+
+  it("lets the alarm branch keep clock-only requests", () => {
+    const alarm: McpWireTool = {
+      server_id: "builtin",
+      name: "alarm_create",
+      qualified: "builtin__alarm_create",
+      description: "create an alarm",
+      schema: {},
+    };
+    // No calendar noun: stays an alarm even though "monday" is a date phrase.
+    expect(
+      keywordFallback("set an alarm at 7am on monday", [alarm, create, list], []),
+    ).toMatchObject({ qualified: "builtin__alarm_create", args: { weekdays: ["Mon"] } });
+    // Calendar-relevant AND dated: "dec 25" must NOT become a 23:00 alarm
+    // (parseClock reads the 25 as an hour) — it becomes the event.
+    expect(
+      keywordFallback("remind me on dec 25 about the meeting", [alarm, create, list], []),
+    ).toMatchObject({ qualified: "calendar__calendar_create", args: { date: "dec 25" } });
+  });
+
+  it("routes dated requests before the browser branches", () => {
+    const nav: McpWireTool = {
+      server_id: "mcp__browser",
+      name: "navigate",
+      qualified: "mcp__browser__navigate",
+      description: "navigate",
+      schema: {},
+    };
+    const c = call(
+      "add a calendar event tomorrow about the RFID demo on localhost:3000",
+      [nav],
+    );
+    expect(c?.qualified).toBe("calendar__calendar_create");
+  });
+});
+
 describe("alarm/calendar dedupe (canonical keys via the parsers)", () => {
   beforeEach(() => {
     // Dropping a duplicate logs the call; keep test output clean.
