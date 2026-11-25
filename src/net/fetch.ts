@@ -21,10 +21,36 @@ export async function doFetch(url: string, init: RequestInit): Promise<Response>
           ? 0
           : -1;
   console.log(`${init.method ?? "GET"} ${url} (${size < 0 ? "?" : size} byte body)`);
+  // The one-liner above says nothing about WHAT is being sent. The full body
+  // goes on its own line — pretty-printed when it's JSON — so the Settings >
+  // Logs panel can show the exact request to the LLM. Big bodies (media
+  // attachments riding as base64) stay a raw peek: parsing and re-stringify-
+  // ing multi-MB JSON would stall the webview right before the request.
+  if (typeof body === "string" && body) {
+    const peek =
+      body.length > PRETTY_BODY_MAX
+        ? body.slice(0, 3000) + `… (+${body.length - 3000} chars)`
+        : prettyBody(body);
+    console.log(`${init.method ?? "GET"} ${url} body:\n${peek}`);
+  }
   if (isTauri()) {
     return tauriFetch(url, init);
   }
   return fetch(url, init);
+}
+
+// Bodies up to this size are pretty-printed in full; the Logs sink keeps a
+// bounded entry per line, so a pretty-printed LLM request (typically well
+// under 30 KB) survives the sink's per-message cap intact.
+const PRETTY_BODY_MAX = 20_000;
+
+function prettyBody(body: string): string {
+  try {
+    return JSON.stringify(JSON.parse(body), null, 2);
+  } catch {
+    // Not JSON (form posts etc.) — log it raw.
+    return body;
+  }
 }
 
 export function canStream(res: Response): boolean {
