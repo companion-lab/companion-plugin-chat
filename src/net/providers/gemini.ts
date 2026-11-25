@@ -33,7 +33,7 @@ import {
   tagKinds,
 } from "../reply";
 import { doFetch, canStream, throwIfHttpError } from "../fetch";
-import { geminiToolResultParts } from "../media-parts";
+import { geminiToolResultParts, geminiAttachmentParts, convoHasMedia, stripConvoMedia } from "../media-parts";
 import { readSse } from "../sse";
 
 export class GeminiProvider implements Provider {
@@ -67,11 +67,18 @@ export class GeminiProvider implements Provider {
     const builtBase = buildMessages(messages, this.cfg.persona, memoryContext);
     const sysBase = msgText(builtBase[0]);
     // Gemini contents (model/user only); tool I/O replays as text parts.
+    // User turns with attachments get media parts appended after the text.
     let contents: any[] = builtBase
       .filter((m) => m.role !== "system")
       .map((m) => ({
         role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: msgText(m) }],
+        parts:
+          m.attachments?.length
+            ? [
+                { text: msgText(m) },
+                ...geminiAttachmentParts(m.attachments),
+              ]
+            : [{ text: msgText(m) }],
       }));
     const goal = originalGoal(builtBase.filter((m) => m.role !== "system"));
     const callsSoFar: Array<{ qualified: string; args: unknown }> = [];
@@ -114,7 +121,20 @@ export class GeminiProvider implements Provider {
         body: JSON.stringify(body),
         signal,
       });
-      await throwIfHttpError(res);
+      if (!res.ok) {
+        // Gemini rejects inline_data whose format it can't ingest (400) or
+        // oversized requests (413/422). Strip media parts once and retry
+        // with notes so the turn still completes.
+        if (convoHasMedia(contents) && (res.status === 400 || res.status === 413 || res.status === 422)) {
+          console.warn(
+            `[llm] media parts rejected (HTTP ${res.status}), retrying with media stripped`,
+          );
+          stripConvoMedia(contents);
+          step--;
+          continue;
+        }
+        await throwIfHttpError(res);
+      }
       if (!canStream(res)) {
         const nr = await this.chatNonStream(body, signal, kinds, (u) => { lastUsage = u; });
         return { ...nr, usage: lastUsage };

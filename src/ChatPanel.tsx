@@ -66,6 +66,11 @@ import {
 } from "./context";
 import { fetchMemoryContext } from "./net/memory";
 import {
+  readAttachments,
+  attachmentTokenEstimate,
+  type PendingAttachment,
+} from "./net/attachments";
+import {
   getApiSettings,
   getPersonaSettings,
   subscribeChatSettings,
@@ -143,6 +148,9 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
     setUsage(null);
   }, []);
   const [input, setInput] = useState("");
+  // Files picked/pasted but not sent yet (see net/attachments.ts). Cleared
+  // on send; chips render in ChatInput above the row.
+  const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [streaming, setStreaming] = useState("");
   // Live reasoning text from thinking models. Transient: never persisted to
   // history, never spoken.
@@ -152,7 +160,9 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
   const [err, setErr] = useState<string | null>(null);
   const clientRef = useRef<RouterClient | null>(null);
   const isSendingRef = useRef(false);
-  const pendingQueueRef = useRef<string[]>([]);
+  // Messages typed while a turn is in flight, replayed when it finishes.
+  // Attachments ride along so a queued send doesn't lose its files.
+  const pendingQueueRef = useRef<Array<{ text: string; attachments?: PendingAttachment[] }>>([]);
   // Auto-compact (net/compact.ts): server-reported usage of the last turn
   // (the real context fill), the transient compacting state, and its guard
   // against concurrent sends while a summary is in flight.
@@ -536,7 +546,16 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
         setSending(false);
         onStreamDone(full);
         const queued = pendingQueueRef.current.splice(0);
-        if (queued.length > 0) sendTextRef.current(queued.join(" "));
+        if (queued.length > 0) {
+          // Plain texts merge into one message (as before); any queued
+          // message with attachments replays as its own turn so the files
+          // stay attached.
+          if (queued.every((q) => !q.attachments?.length)) {
+            sendTextRef.current(queued.map((q) => q.text).join(" "));
+          } else {
+            for (const q of queued) void sendTextRef.current(q.text, q.attachments);
+          }
+        }
       },
       onError: (e) => {
         if (streamRafRef.current) {
@@ -573,8 +592,8 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
     }, memoryContext);
   }, [ctx, onStreamStart, onStreamToken, onStreamDone, commitHistory, dismissAsk]);
 
-  const sendText = useCallback(async (text: string) => {
-    if (!text) return;
+  const sendText = useCallback(async (text: string, attachments?: PendingAttachment[]) => {
+    if (!text && !(attachments?.length)) return;
     // While a clarifying question is open, any typed message answers it
     // instead of starting a new turn.
     if (pendingAskRef.current) {
@@ -583,35 +602,54 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
       return;
     }
     if (isSendingRef.current || compactingRef.current) {
-      pendingQueueRef.current.push(text);
+      pendingQueueRef.current.push({ text, attachments });
       return;
     }
     setInput("");
     // Commit first so the bubble appears instantly; memory + compaction
     // happen between commit and turn.
     const prev = historyRef.current;
-    const next: Msg[] = [...prev, { role: "user", text }];
+    const atts: Msg["attachments"] = attachments?.length
+      ? attachments.map((a) => ({
+          name: a.name,
+          mime: a.mime,
+          size: a.size,
+          dataBase64: a.base64,
+          ...(a.frames?.length ? { frames: a.frames } : {}),
+        }))
+      : undefined;
+    const userMsg: Msg = { role: "user", text, ...(atts ? { attachments: atts } : {}) };
+    const next: Msg[] = [...prev, userMsg];
     commitHistory(next);
     // Memory plugin integration (see ./net/memory.ts): the capture event
     // lands in the memory plugin's vector store, and its recall block for
     // this message rides in the system prompt. Both degrade to no-ops when
-    // the memory plugin is absent/disabled/unconfigured.
-    ctx.events.emit("message", { role: "user", text, ts: Date.now() });
-    const memoryContext = await fetchMemoryContext(text);
+    // the memory plugin is absent/disabled/unconfigured. Attachment bytes
+    // don't cross the event — just names, so recall knows a file existed.
+    const memoryText = atts?.length
+      ? `${text}${text ? "\n" : ""}[attached: ${atts.map((a) => a.name).join(", ")}]`
+      : text;
+    ctx.events.emit("message", { role: "user", text: memoryText, ts: Date.now() });
+    const memoryContext = await fetchMemoryContext(memoryText);
     // Auto-compact (net/compact.ts): project this turn's context fill and,
     // at COMPACT_THRESHOLD of the configured window, summarize older
     // history first. Any failure just logs — the uncompacted wire still
-    // goes out, chat never blocks on a summary.
+    // goes out, chat never blocks on a summary. Attachments count at their
+    // flat per-kind estimates (context.ts), not their base64 length.
     let base = prev;
+    const attTokens = (atts ?? []).reduce(
+      (k, a) => k + attachmentTokenEstimate(a.mime, a.dataBase64 ?? "", a.frames),
+      0,
+    );
     const lastIn = lastUsageRef.current?.inputTokens ?? 0;
     const projected =
       lastIn > 0
-        ? lastIn + estimateTokens(text)
+        ? lastIn + estimateTokens(text) + attTokens
         : estimateContextTokens(
             buildWire(base),
             buildSystemPrompt(persona, memoryContext),
             memoryContext,
-          ) + estimateTokens(text);
+          ) + estimateTokens(text) + attTokens;
     if (
       api.autoCompact &&
       api.contextWindow > 0 &&
@@ -633,7 +671,7 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
           setUsage(null);
           // Re-commit so the transcript shows the compact marker ahead of
           // the new message.
-          commitHistory([...base, { role: "user", text }]);
+          commitHistory([...base, userMsg]);
         } catch (e) {
           ctx.log.warn(
             `auto-compact failed (continuing uncompacted): ${
@@ -646,8 +684,25 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
         }
       }
     }
-    await runTurn(buildWire([...base, { role: "user", text }]), memoryContext);
+    await runTurn(buildWire([...base, userMsg]), memoryContext);
   }, [ctx, api, persona, runTurn, commitHistory]);
+
+  /** Read picked/pasted files into pending chips; rejections surface in the
+   *  chat error line. Accepted files join whatever is already pending. */
+  const onFilesPicked = useCallback(async (files: File[]) => {
+    if (!files.length) return;
+    const queuedBytes = pending.reduce((n, a) => n + a.base64.length, 0);
+    const { attachments, errors } = await readAttachments(files, queuedBytes);
+    setErr((e) => {
+      const combined = [...(e ? [e] : []), ...errors].join(" · ");
+      return combined || null;
+    });
+    if (attachments.length) setPending((p) => [...p, ...attachments]);
+  }, [pending]);
+
+  const removePending = useCallback((id: string) => {
+    setPending((p) => p.filter((a) => a.id !== id));
+  }, []);
 
   const stop = useCallback(() => {
     if (!isSendingRef.current) return;
@@ -875,9 +930,20 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
 
   const send = useCallback(() => {
     const text = input.trim();
-    if (!text) return;
-    sendText(text);
-  }, [input, sendText]);
+    if (!text && !pending.length) return;
+    // While a clarifying question is open, a typed message answers it;
+    // pending chips stay for the next message instead of vanishing into
+    // the answer (sendText drops attachments on that path — voice text
+    // never carries any).
+    if (pendingAskRef.current) {
+      if (!text) return;
+      setInput("");
+      answerAskRef.current(text);
+      return;
+    }
+    setPending([]);
+    sendText(text, pending);
+  }, [input, pending, sendText]);
 
   const { ConfirmModal } = ctx.ui as Record<string, any>;
 
@@ -945,7 +1011,7 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
               are no longer sent
             </div>
           ) : (
-            <MessageBubble key={i} role={m.role} text={m.text} />
+            <MessageBubble key={i} role={m.role} text={m.text} attachments={m.attachments} />
           ),
         )}
         {sending && !streaming && !thinking && (
@@ -1025,6 +1091,9 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
         micAvailable={!!ctx.services.stt()}
         sending={sending}
         onStop={stop}
+        pending={pending}
+        onFiles={onFilesPicked}
+        onRemovePending={removePending}
       />
     </div>
   );

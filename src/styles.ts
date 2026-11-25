@@ -664,4 +664,86 @@ const CHAT_CSS = `/* Confirm modal + buttons for the main window. It loads no ot
   background: rgba(255, 125, 151, 0.24);
   color: #ff7d97;
 }
+
+/* ============================== */
+/* Attachments                    */
+/* ============================== */
+
+.cp-attach-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 2px 6px;
+}
+
+/* Pending chips (ChatInput) and transcript chips (MessageBubble) */
+.cp-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 180px;
+  padding: 4px 6px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(143, 157, 255, 0.28);
+  color: #c9d2ff;
+  font-size: 10.5px;
+  line-height: 1.2;
+}
+
+.cp-attach-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.cp-attach-chip-img {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.cp-attach-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #7d87ab;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.cp-attach-chip-x:hover {
+  background: rgba(255, 125, 151, 0.18);
+  color: #ff7d97;
+}
+
+/* Transcript thumbnails (MessageBubble) */
+.cp-attach-thumb {
+  display: inline-block;
+  max-width: 200px;
+  max-height: 130px;
+  border-radius: 9px;
+  overflow: hidden;
+  border: 1px solid rgba(143, 157, 255, 0.3);
+  line-height: 0;
+  cursor: zoom-in;
+}
+
+.cp-attach-thumb img {
+  max-width: 200px;
+  max-height: 130px;
+  object-fit: cover;
+  display: block;
+}
 `;

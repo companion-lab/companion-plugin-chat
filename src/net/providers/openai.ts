@@ -32,7 +32,7 @@ import {
   tagKinds,
 } from "../reply";
 import { doFetch, canStream } from "../fetch";
-import { openAIToolResultContent, convoHasMedia, stripConvoMedia } from "../media-parts";
+import { openAIToolResultContent, openAIToolResultSplit, openAIMediaParts, openAIAttachmentParts, convoHasMedia, stripConvoMedia } from "../media-parts";
 import {
   readSse,
   extractPartialText,
@@ -79,10 +79,19 @@ export class OpenAIProvider implements Provider {
     const hint = mcpSystemHint(mcpTools);
     const openAITools = toOpenAITools(mcpTools);
     // Raw OpenAI message list (supports tool role); converted at the end.
-    let convo: any[] = buildMessages(messages, this.cfg.persona, memoryContext).map((m) => ({
-      role: m.role,
-      content: msgText(m),
-    }));
+    // User turns with attachments become content parts (text first, media
+    // after) instead of a plain string.
+    let convo: any[] = buildMessages(messages, this.cfg.persona, memoryContext).map((m) =>
+      m.attachments?.length
+        ? {
+            role: m.role,
+            content: [
+              { type: "text", text: msgText(m) },
+              ...openAIAttachmentParts(m.attachments),
+            ],
+          }
+        : { role: m.role, content: msgText(m) },
+    );
     if (hint) {
       convo[0] = { role: "system", content: `${msgText(convo[0])}${hint}` };
     }
@@ -131,6 +140,19 @@ export class OpenAIProvider implements Provider {
       });
       if (!res.ok) {
         const t = await res.text().catch(() => "");
+        // Media first: a 400 caused by image/audio parts would otherwise be
+        // misattributed to streaming and re-sent once more before stripping.
+        if (
+          convoHasMedia(convo) &&
+          (res.status === 400 || res.status === 422 || res.status === 404)
+        ) {
+          console.warn(
+            `[llm] media parts rejected (HTTP ${res.status}), retrying with media stripped`,
+          );
+          stripConvoMedia(convo);
+          step--;
+          continue;
+        }
         if (
           wantStream &&
           (res.status === 400 ||
@@ -155,20 +177,6 @@ export class OpenAIProvider implements Provider {
             `[llm] forced ${carrier} rejected (HTTP ${res.status}), retrying without tool_choice`,
           );
           replyToolDisabled = true;
-          step--;
-          continue;
-        }
-        // Servers without multimodal message support (or older Ollama builds)
-        // reject image_url/input_audio parts. Strip them once and retry with
-        // a note so the turn still completes as text.
-        if (
-          convoHasMedia(convo) &&
-          (res.status === 400 || res.status === 422 || res.status === 404)
-        ) {
-          console.warn(
-            `[llm] media parts rejected (HTTP ${res.status}), retrying with media stripped`,
-          );
-          stripConvoMedia(convo);
           step--;
           continue;
         }
@@ -386,11 +394,23 @@ export class OpenAIProvider implements Provider {
       });
       for (const c of calls) {
         const output = await execMcpCall(c.qualified, c.args, signal);
+        // Tool messages must stay string-only on official OpenAI (and most
+        // compatible servers), so media rides in a following user message.
+        const { toolContent, media } = openAIToolResultSplit(c.qualified, output, goal);
         convo.push({
           role: "tool",
           tool_call_id: c.id,
-          content: openAIToolResultContent(c.qualified, output, goal),
+          content: toolContent,
         });
+        if (media) {
+          convo.push({
+            role: "user",
+            content: [
+              { type: "text", text: `[${c.qualified} returned this media]` },
+              ...openAIMediaParts(media),
+            ],
+          });
+        }
       }
     }
     throw new Error("mcp loop exhausted");

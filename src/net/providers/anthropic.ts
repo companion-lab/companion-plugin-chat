@@ -35,7 +35,7 @@ import {
   tagKinds,
 } from "../reply";
 import { doFetch, canStream, throwIfHttpError } from "../fetch";
-import { anthropicToolResultBlocks } from "../media-parts";
+import { anthropicToolResultBlocks, anthropicAttachmentBlocks, convoHasMedia, stripConvoMedia } from "../media-parts";
 import { readSse, extractPartialText } from "../sse";
 
 export class AnthropicProvider implements Provider {
@@ -84,9 +84,21 @@ export class AnthropicProvider implements Provider {
     ];
     const built0 = buildMessages(messages, this.cfg.persona, memoryContext);
     const sysBase = msgText(built0[0]);
+    // User turns with attachments become content blocks (text first, media
+    // after) instead of a plain string.
     const convo: any[] = built0
       .filter((m) => m.role !== "system")
-      .map((m) => ({ role: m.role, content: msgText(m) }));
+      .map((m) =>
+        m.attachments?.length
+          ? {
+              role: m.role,
+              content: [
+                { type: "text", text: msgText(m) },
+                ...anthropicAttachmentBlocks(m.attachments),
+              ],
+            }
+          : { role: m.role, content: msgText(m) },
+      );
     const goal = originalGoal(convo);
     const callsSoFar: Array<{ qualified: string; args: unknown }> = [];
     // Context-fill detection (net/compact.ts): see openai.ts. Anthropic puts
@@ -116,7 +128,20 @@ export class AnthropicProvider implements Provider {
         body: JSON.stringify(body),
         signal,
       });
-      await throwIfHttpError(res);
+      if (!res.ok) {
+        // Anthropic rejects image/document blocks whose format it can't
+        // ingest (HTTP 400) or requests over limits (422). Strip media
+        // blocks once and retry with notes so the turn still completes.
+        if (convoHasMedia(convo) && (res.status === 400 || res.status === 422)) {
+          console.warn(
+            `[llm] media blocks rejected (HTTP ${res.status}), retrying with media stripped`,
+          );
+          stripConvoMedia(convo);
+          step--;
+          continue;
+        }
+        await throwIfHttpError(res);
+      }
       if (!canStream(res)) {
         const nr = await this.chatNonStream(
           body,

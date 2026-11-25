@@ -9,7 +9,18 @@
 import { isTauri, tauriInvoke } from "../tauri";
 
 export async function doFetch(url: string, init: RequestInit): Promise<Response> {
-  console.log(url, init.body);
+  // Body size only — media-bearing bodies are multi-MB and logging them
+  // whole stalls the webview main thread right before the request.
+  const body = init.body;
+  const size =
+    typeof body === "string"
+      ? body.length
+      : body instanceof Blob
+        ? body.size
+        : body == null
+          ? 0
+          : -1;
+  console.log(`${init.method ?? "GET"} ${url} (${size < 0 ? "?" : size} byte body)`);
   if (isTauri()) {
     return tauriFetch(url, init);
   }

@@ -242,7 +242,11 @@ async function execPluginTool(
   const frontend = frontendTools().get(qualified);
   if (frontend) {
     try {
-      return String(await frontend.execute(args, signal));
+      // Objects are stringified like backend results — a tool returning a
+      // companion_media envelope must stay parseable, not become
+      // "[object Object]".
+      const r = await frontend.execute(args, signal);
+      return typeof r === "string" ? r : JSON.stringify(r);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[plugins] ${qualified} failed: ${msg}`);

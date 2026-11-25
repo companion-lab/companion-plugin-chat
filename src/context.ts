@@ -2,8 +2,9 @@
 // handling in buildWire, the 80% auto-compact threshold, and token-estimate
 // helpers for the context-usage indicator (see net/compact.ts).
 
-import type { ChatMessage } from "./net/protocol";
+import type { ChatAttachment, ChatMessage } from "./net/protocol";
 import type { Msg } from "./chat-history";
+import { attachmentNote, attachmentTokenEstimate } from "./net/attachments";
 
 // Newest-first budget: 30 user+assistant pairs (60 msgs). The leading
 // system/persona message is always pinned — providers build it into
@@ -57,8 +58,34 @@ export function buildWire(history: Array<Msg | { role: "system"; text: string }>
   return [
     ...sys,
     ...summary,
-    ...tail.map((m) => ({ role: m.role, content: m.text }) as ChatMessage),
+    ...tail.map((m) => wireMessage(m)),
   ];
+}
+
+/** A stored message as a provider-agnostic wire message. Attachments with
+ *  bytes ride in the (provider-specific) `attachments` field; data-less
+ *  ones — persistence strips old bytes — degrade to a text note so the
+ *  model still learns a file existed. */
+function wireMessage(m: Msg): ChatMessage {
+  const atts = m.role === "user" ? m.attachments : undefined;
+  if (!atts?.length) {
+    return { role: m.role, content: m.text } as ChatMessage;
+  }
+  let text = m.text;
+  const live: ChatAttachment[] = [];
+  for (const a of atts) {
+    if (a.dataBase64 || a.frames?.length) {
+      live.push({
+        name: a.name,
+        mime: a.mime,
+        base64: a.dataBase64 ?? "",
+        ...(a.frames?.length ? { frames: a.frames } : {}),
+      });
+    } else {
+      text = `${text}${text ? "\n" : ""}${attachmentNote(a.name, a.mime)}`;
+    }
+  }
+  return { role: m.role, content: text, ...(live.length ? { attachments: live } : {}) } as ChatMessage;
 }
 
 /** Rough token estimate for future budget UI. Not enforced anywhere yet. */
@@ -68,7 +95,9 @@ export function estimateTokens(s: string): number {
 
 /** Estimate the full request cost when no server-reported usage exists
  *  (first turn of a session, or local endpoints that report no usage):
- *  built system prompt + wire + this turn's memory recall block. */
+ *  built system prompt + wire + this turn's memory recall block. Attachment
+ *  bytes are NOT stringified — they'd dominate the estimate — so each one
+ *  contributes a flat per-kind figure instead. */
 export function estimateContextTokens(
   wire: ChatMessage[],
   systemText: string,
@@ -77,6 +106,15 @@ export function estimateContextTokens(
   return (
     estimateTokens(systemText) +
     estimateTokens(memoryContext ?? "") +
-    wire.reduce((n, m) => n + estimateTokens(msgContentText(m.content)), 0)
+    wire.reduce(
+      (n, m) =>
+        n +
+        estimateTokens(msgContentText(m.content)) +
+        (m.attachments ?? []).reduce(
+          (k, a) => k + attachmentTokenEstimate(a.mime, a.base64, a.frames),
+          0,
+        ),
+      0,
+    )
   );
 }
