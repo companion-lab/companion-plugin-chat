@@ -33,7 +33,7 @@ import {
   tagKinds,
 } from "../reply";
 import { doFetch, canStream, throwIfHttpError } from "../fetch";
-import { geminiToolResultParts, geminiAttachmentParts, convoHasMedia, stripConvoMedia } from "../media-parts";
+import { geminiToolResultParts, geminiAttachmentParts, convoHasMedia, stripConvoMedia, serverRejectionReason } from "../media-parts";
 import { readSse } from "../sse";
 
 export class GeminiProvider implements Provider {
@@ -126,10 +126,11 @@ export class GeminiProvider implements Provider {
         // oversized requests (413/422). Strip media parts once and retry
         // with notes so the turn still completes.
         if (convoHasMedia(contents) && (res.status === 400 || res.status === 413 || res.status === 422)) {
+          const t = await res.text().catch(() => "");
           console.warn(
-            `[llm] media parts rejected (HTTP ${res.status}), retrying with media stripped`,
+            `[llm] media parts rejected (HTTP ${res.status}), retrying with media stripped${t ? `: ${t.slice(0, 160)}` : ""}`,
           );
-          stripConvoMedia(contents);
+          stripConvoMedia(contents, serverRejectionReason(t));
           step--;
           continue;
         }

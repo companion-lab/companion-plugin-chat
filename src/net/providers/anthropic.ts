@@ -35,7 +35,7 @@ import {
   tagKinds,
 } from "../reply";
 import { doFetch, canStream, throwIfHttpError } from "../fetch";
-import { anthropicToolResultBlocks, anthropicAttachmentBlocks, convoHasMedia, stripConvoMedia } from "../media-parts";
+import { anthropicToolResultBlocks, anthropicAttachmentBlocks, convoHasMedia, stripConvoMedia, serverRejectionReason } from "../media-parts";
 import { readSse, extractPartialText } from "../sse";
 
 export class AnthropicProvider implements Provider {
@@ -133,10 +133,11 @@ export class AnthropicProvider implements Provider {
         // ingest (HTTP 400) or requests over limits (422). Strip media
         // blocks once and retry with notes so the turn still completes.
         if (convoHasMedia(convo) && (res.status === 400 || res.status === 422)) {
+          const t = await res.text().catch(() => "");
           console.warn(
-            `[llm] media blocks rejected (HTTP ${res.status}), retrying with media stripped`,
+            `[llm] media blocks rejected (HTTP ${res.status}), retrying with media stripped${t ? `: ${t.slice(0, 160)}` : ""}`,
           );
-          stripConvoMedia(convo);
+          stripConvoMedia(convo, serverRejectionReason(t));
           step--;
           continue;
         }

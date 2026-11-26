@@ -32,7 +32,7 @@ import {
   tagKinds,
 } from "../reply";
 import { doFetch, canStream } from "../fetch";
-import { openAIToolResultContent, openAIToolResultSplit, openAIMediaParts, openAIAttachmentParts, convoHasMedia, stripConvoMedia } from "../media-parts";
+import { openAIToolResultContent, openAIToolResultSplit, openAIMediaParts, openAIAttachmentParts, convoHasMedia, stripConvoMedia, serverRejectionReason } from "../media-parts";
 import {
   readSse,
   extractPartialText,
@@ -147,9 +147,9 @@ export class OpenAIProvider implements Provider {
           (res.status === 400 || res.status === 422 || res.status === 404)
         ) {
           console.warn(
-            `[llm] media parts rejected (HTTP ${res.status}), retrying with media stripped`,
+            `[llm] media parts rejected (HTTP ${res.status}), retrying with media stripped${t ? `: ${t.slice(0, 160)}` : ""}`,
           );
-          stripConvoMedia(convo);
+          stripConvoMedia(convo, serverRejectionReason(t));
           step--;
           continue;
         }
@@ -335,7 +335,7 @@ export class OpenAIProvider implements Provider {
             );
             callsSoFar.push(fb);
             const output = await execMcpCall(fb.qualified, fb.args, signal);
-            convo.push({ role: "assistant", content: content || null });
+            convo.push({ role: "assistant", content: content || "" });
             convo.push({
               role: "user",
               content: openAIToolResultContent(fb.qualified, output, goal),
@@ -348,7 +348,7 @@ export class OpenAIProvider implements Provider {
             console.log(
               `[mcp] step ${step + 1}: task incomplete, nudging for next tool`,
             );
-            convo.push({ role: "assistant", content: content || null });
+            convo.push({ role: "assistant", content: content || "" });
             convo.push({
               role: "user",
               content: `${toolResultMessage("none", "No tool was called.", goal)} Keep working: call the next MCP tool now.`,
@@ -372,7 +372,7 @@ export class OpenAIProvider implements Provider {
         console.log(
           `[mcp] step ${step + 1}: only duplicate alarm calls, nudging to reply`,
         );
-        convo.push({ role: "assistant", content: content || null });
+        convo.push({ role: "assistant", content: content || "" });
         convo.push({
           role: "user",
           content: `${toolResultMessage("alarms__alarm_create", "The alarm is already set — do not call alarms__alarm_create again. Now reply to the user confirming the alarm.", goal)}`,
@@ -385,7 +385,7 @@ export class OpenAIProvider implements Provider {
       }
       convo.push({
         role: "assistant",
-        content: content || null,
+        content: content || "",
         tool_calls: calls.map((c) => ({
           id: c.id,
           type: "function",

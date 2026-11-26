@@ -10,6 +10,7 @@ import {
   openAIToolResultContent,
   openAIToolResultSplit,
   parseToolMedia,
+  serverRejectionReason,
   stripConvoMedia,
   truncateToolOutput,
 } from "./media-parts";
@@ -260,6 +261,44 @@ describe("convoHasMedia / stripConvoMedia", () => {
     stripConvoMedia(convo);
     expect(convo[0].content).toEqual([{ type: "text", text: "hello" }]);
     expect(convo[1].content).toBeNull();
+  });
+
+  it("appends the server's rejection reason to the note", () => {
+    // Own fixture: earlier tests in this block push notes into the shared
+    // mediaToolMessage.content array, so its media parts are already gone.
+    const convo = [
+      {
+        role: "tool",
+        content: [
+          { type: "text", text: "note" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,IMG" } },
+          { type: "input_audio", input_audio: { data: "AUD", format: "wav" } },
+        ],
+      },
+    ];
+    const reason = serverRejectionReason(
+      `{"error":{"message":"request (5553 tokens) exceeds the available context size (4096 tokens), try increasing it"}}`,
+    );
+    stripConvoMedia(convo, reason);
+    expect(convo[0].content).toEqual([
+      { type: "text", text: "note" },
+      {
+        type: "text",
+        text: "[2 media part(s) omitted — this server rejected them: request (5553 tokens) exceeds the available context size (4096 tokens), try increasing it. The capture/file could not be viewed with the current provider; tell the user.]",
+      },
+    ]);
+    expect(convoHasMedia(convo)).toBe(false);
+  });
+
+  it("serverRejectionReason reads error.message or falls back to the raw body", () => {
+    expect(
+      serverRejectionReason(`{"error":{"message":"too big"}}`),
+    ).toBe("too big");
+    expect(serverRejectionReason(`{"error":"string error"}`)).toBe("string error");
+    // Newlines flattened, capped at 160 chars.
+    expect(serverRejectionReason("line one\nline two")).toBe("line one line two");
+    expect(serverRejectionReason("x".repeat(300))).toHaveLength(160);
+    expect(serverRejectionReason("")).toBe("");
   });
 });
 

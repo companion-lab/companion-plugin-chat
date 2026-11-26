@@ -455,14 +455,41 @@ export function convoHasMedia(
   });
 }
 
+/** Condense a provider's rejection body into one short line for the
+ *  strip note. Prefers the JSON `error.message` most servers send; falls
+ *  back to a flattened excerpt of the raw body. Empty for unreadable
+ *  bodies, so the note keeps its original shape. */
+export function serverRejectionReason(body: string): string {
+  if (!body) return "";
+  try {
+    const v = JSON.parse(body) as { error?: { message?: string } | string };
+    const msg =
+      typeof v.error === "string"
+        ? v.error
+        : typeof v.error?.message === "string"
+          ? v.error.message
+          : "";
+    if (msg) return msg.slice(0, 160);
+  } catch {
+    // Not JSON — use the raw body below.
+  }
+  const flat = body.replace(/\s+/g, " ").trim();
+  return flat ? flat.slice(0, 160) : "";
+}
+
 /**
  * Replace media parts with a text note so a server that rejected the request
  * can still answer. Mutates the conversation in place; nested Anthropic
  * tool_result media is removed from its block and the aggregate note rides
- * at the top level of the same message.
+ * at the top level of the same message. `reason` (the server's own error
+ * line) is appended when known, so the model can tell the user WHY the
+ * capture was not viewable instead of a bare "rejected" — e.g. Ollama's
+ * context-size error, which reads like the vision plugin is broken when
+ * really the model's context window is too small.
  */
 export function stripConvoMedia(
   convo: Array<Record<string, unknown>>,
+  reason?: string,
 ): void {
   for (const m of convo) {
     const locs = [...mediaPartLocs(m)];
@@ -472,7 +499,7 @@ export function stripConvoMedia(
     for (const loc of locs.sort((a, b) => b.index - a.index)) {
       loc.parts.splice(loc.index, 1);
     }
-    const note = `[${count} media part(s) omitted — this server rejected them. The capture/file could not be viewed with the current provider; tell the user.]`;
+    const note = `[${count} media part(s) omitted — this server rejected them${reason ? `: ${reason}` : ""}. The capture/file could not be viewed with the current provider; tell the user.]`;
     const outer = Array.isArray(m.content) ? m.content : Array.isArray(m.parts) ? m.parts : null;
     if (!outer) continue;
     // The note rides in each wire's own part shape: typed parts for
