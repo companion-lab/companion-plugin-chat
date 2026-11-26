@@ -117,6 +117,17 @@ function readBargeIn(): boolean {
 // hands the host mic shortcut off to us (must match MicShortcutOverlay.tsx).
 const CHAT_PANEL_PRESENT_FLAG = "companion:chat-panel-present";
 
+/** Display-only voice-tag cleanup: the active voice plugin may know the
+ *  canonical bracket form of its emotion tags (sakura rewrites the model's
+ *  blended <<happy4>> / [happy4] / (happy4) into 【happy4】). Applied at render
+ *  so the raw text — which the voice engine re-parses at speak time — stays
+ *  untouched; the voice still gets the emotion even when this normalizer is
+ *  absent (stock tts has no tag list to normalize against). */
+function displayTagged(ctx: PluginContext, text: string): string {
+  if (!text) return text;
+  return ctx.services.tts()?.normalizeVoiceTags?.(text) ?? text;
+}
+
 export function ChatPanel({ ctx }: { ctx: PluginContext }) {
   injectStyles();
 
@@ -1011,7 +1022,7 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
               are no longer sent
             </div>
           ) : (
-            <MessageBubble key={i} role={m.role} text={m.text} attachments={m.attachments} />
+            <MessageBubble key={i} role={m.role} text={displayTagged(ctx, m.text)} attachments={m.attachments} />
           ),
         )}
         {sending && !streaming && !thinking && (
@@ -1042,7 +1053,7 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
           </div>
         )}
         {streaming && (
-          <MessageBubble role="assistant" text={streaming} streaming />
+          <MessageBubble role="assistant" text={displayTagged(ctx, streaming)} streaming />
         )}
         {liveText && (
           <div className="cp-live">
