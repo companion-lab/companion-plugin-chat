@@ -958,6 +958,42 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
 
   const { ConfirmModal } = ctx.ui as Record<string, any>;
 
+  // Mobile keyboards: this panel is the only layer allowed to move — the app
+  // guard (ui/mobile-keyboard.ts) keeps the avatar canvases and the window
+  // scroll pinned, so the panel must lift itself above the keyboard. The lift
+  // is the keyboard height (layout height − visualViewport height),
+  // deliberately IGNORING offsetTop so the panel sits in stable layout
+  // coordinates and the browser never needs its focus-reveal pan (a pan would
+  // drag the fixed avatar canvas with it and push the head off-screen).
+  // Where the layout itself shrinks (Android, interactive-widget=
+  // resizes-content) the lift is 0 and the CSS bottom gap already sits above
+  // the keyboard; where only the visual viewport shrinks (iOS) the lift
+  // carries the panel above it while the app guard resets the document pan.
+  // Desktop webviews report height == innerHeight, making this a no-op.
+  // `bottom` (not transform) keeps the fixed ConfirmModal viewport-anchored —
+  // a transform would become its containing block. The +10px matches
+  // .cp-root's resting bottom gap in styles.ts.
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = rootRef.current;
+    const vv = window.visualViewport;
+    if (!el || !vv) return;
+    const apply = () => {
+      const kbHeight = Math.max(0, window.innerHeight - vv.height);
+      el.style.bottom = kbHeight > 0 ? `${kbHeight + 10}px` : "";
+    };
+    apply();
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+    window.addEventListener("resize", apply);
+    return () => {
+      vv.removeEventListener("resize", apply);
+      vv.removeEventListener("scroll", apply);
+      window.removeEventListener("resize", apply);
+      el.style.bottom = "";
+    };
+  }, []);
+
   // Context usage indicator: server-reported fill of the last request when
   // available, otherwise a chars/4 estimate over system + wire (memory
   // block unknown at render time — display only; the send-time projection
@@ -973,7 +1009,7 @@ export function ChatPanel({ ctx }: { ctx: PluginContext }) {
   const ctxHot = ctxPct >= Math.round(COMPACT_THRESHOLD * 100);
 
   return (
-    <div className="cp-root">
+    <div className="cp-root" ref={rootRef}>
       <div className="cp-head">
         <span className="cp-head-title">Chat</span>
         {history.length > 0 && (
