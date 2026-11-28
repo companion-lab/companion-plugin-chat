@@ -79,7 +79,7 @@ const CHAT_CSS = `/* Confirm modal + buttons for the main window. It loads no ot
   background: transparent;
   color: #565f89;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.09s ease;
 }
 
 .modal-x:hover:not(:disabled) {
@@ -187,6 +187,16 @@ const CHAT_CSS = `/* Confirm modal + buttons for the main window. It loads no ot
   padding: 10px 12px 12px;
   color: #edf0fb;
   font-size: 12px;
+  /* Micro-interaction: the panel lifts a touch on hover. Box-shadow only —
+     a real border would shift the 1px layout. */
+  box-shadow: 0 0 0 0 rgba(143, 157, 255, 0);
+  transition: box-shadow 0.2s ease;
+}
+
+.cp-root:hover {
+  box-shadow:
+    inset 0 0 0 1px rgba(143, 157, 255, 0.22),
+    0 8px 24px rgba(5, 8, 16, 0.45);
 }
 
 .cp-head {
@@ -281,7 +291,7 @@ const CHAT_CSS = `/* Confirm modal + buttons for the main window. It loads no ot
   background: transparent;
   color: #5d6789;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.09s ease;
 }
 
 .cp-clear:hover:not(:disabled) {
@@ -374,7 +384,7 @@ const CHAT_CSS = `/* Confirm modal + buttons for the main window. It loads no ot
   padding: 3px 5px;
   border-radius: 5px;
   opacity: 0;
-  transition: opacity 0.15s ease, background 0.15s ease;
+  transition: opacity 0.15s ease, background 0.15s ease, transform 0.09s ease;
   cursor: pointer;
   background: rgba(11, 14, 23, 0.6);
   border: none;
@@ -526,7 +536,7 @@ const CHAT_CSS = `/* Confirm modal + buttons for the main window. It loads no ot
   border: 1px solid rgba(143, 157, 255, 0.35);
   color: #c9d2ff;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.09s ease;
   font-family: inherit;
 }
 
@@ -548,6 +558,7 @@ const CHAT_CSS = `/* Confirm modal + buttons for the main window. It loads no ot
   color: #9aa4cb;
   text-decoration: underline;
   cursor: pointer;
+  transition: color 0.15s ease, transform 0.09s ease;
   font-family: inherit;
 }
 
@@ -598,7 +609,7 @@ const CHAT_CSS = `/* Confirm modal + buttons for the main window. It loads no ot
   background: rgba(255, 255, 255, 0.055);
   color: #9aa4cb;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.09s ease;
 }
 
 .cp-btn:hover:not(:disabled) {
@@ -720,7 +731,7 @@ const CHAT_CSS = `/* Confirm modal + buttons for the main window. It loads no ot
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.09s ease;
 }
 
 .cp-attach-chip-x:hover {
@@ -745,5 +756,23 @@ const CHAT_CSS = `/* Confirm modal + buttons for the main window. It loads no ot
   max-height: 130px;
   object-fit: cover;
   display: block;
+}
+
+/* ============================== */
+/* Press feedback                  */
+/* ============================== */
+
+/* A quick compress on click for every interactive control, matching the
+   drag-react feel. The transition lists above already carry the transform
+   property; .modal-actions button transitions all properties. */
+.cp-btn:active:not(:disabled),
+.cp-clear:active:not(:disabled),
+.cp-attach-chip-x:active,
+.cp-ask-opt:active,
+.cp-ask-skip:active,
+.cp-copy:active,
+.modal-x:active:not(:disabled),
+.modal-actions button:active:not(:disabled) {
+  transform: scale(0.94);
 }
 `;
